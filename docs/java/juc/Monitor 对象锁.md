@@ -570,8 +570,8 @@ void ATTR ObjectMonitor::EnterI (TRAPS) {
 void ObjectSynchronizer::wait(Handle obj, jlong millis, TRAPS) {
     // 拿到 ObjectMonitor 对象
     ObjectMonitor* monitor = ObjectSynchronizer::inflate(THREAD,
-    obj(),
-    inflate_cause_wait);
+                                                         obj(),
+                                                         inflate_cause_wait);
 
     // 调用 src\share\vm\runtime\objectMonitor.cpp#ObjectMonitor::wait
     monitor->wait(millis, true, THREAD);
