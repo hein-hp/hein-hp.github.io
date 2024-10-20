@@ -2,6 +2,9 @@
 title: Monitor 对象锁
 createTime: 2024/10/20 10:40:45
 permalink: /article/mma855sd/
+tags:
+- jvm
+- java
 ---
 ## 前言
 
