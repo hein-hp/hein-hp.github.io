@@ -51,7 +51,7 @@ AOP 的三种实现，本质就是有关如何创建代理对象的命题。
 下面我们开始研究 Spring 底层的 AOP 实现，首先看一个简单的例子：
 
 ```java
-import org.aspectj.lang.*
+import org.aspectj.lang.*;
 import org.springframework.stereotype.Component;
 
 @Aspect
@@ -450,7 +450,7 @@ public Advice getAdvice(Method candidateAdviceMethod, AspectJExpressionPointcut 
 
 这里缓存也是有一些说道的，容器内部对 Advisor 的缓存分为 cachedAdvisorBeanNames 和 aspectBeanNames + advisorsCache。
 
-这里 cachedAdvisorBeanNames 是一个 String[]，主要保存了 Advisor Bean 的名称，而 aspectBeanNames 是一个 List<String>，主要保存了 @Aspect 注解的 Bean 名称，而 advisorsCache 是一个 Map，key 为 Bean 名称，value 为 Advisor 集合（因为一个 @Aspect 切面可能有多个 Advisor）。 
+这里 cachedAdvisorBeanNames 是一个 String[]，主要保存了 Advisor Bean 的名称，而 aspectBeanNames 是一个 List&lt;String&gt;，主要保存了 @Aspect 注解的 Bean 名称，而 advisorsCache 是一个 Map，key 为 Bean 名称，value 为 Advisor 集合（因为一个 @Aspect 切面可能有多个 Advisor）。 
 
 后面判断是否创建代理对象（Bean 是否有匹配的切点）就依赖于这三个属性，我们后面再看。
 
