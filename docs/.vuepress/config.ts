@@ -22,7 +22,7 @@ export default defineUserConfig({
 
       markdownEnhance: {
         include: true,
-        // mermaid: true,
+        mermaid: true,
         // flowchart: true,
       },
 
