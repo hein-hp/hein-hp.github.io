@@ -2,28 +2,41 @@ import { viteBundler } from '@vuepress/bundler-vite'
 import { defineUserConfig } from 'vuepress'
 import { plumeTheme } from 'vuepress-theme-plume'
 
+const copyright = 'Copyright © ' + new Date().getFullYear() + '  <a href="hein.hp@foxmail.com" target=_blank>hein.hp@foxmail.com</a>'
+
 export default defineUserConfig({
   base: '/',
   lang: 'zh-CN',
-  title: 'Pika',
-  description: 'Pika',
+  title: 'GemengYin',
+  description: '一个美丽的女孩',
+
+  head: [
+    ['link', { rel: 'icon', href: '/coffee-beans.png' }],
+  ],
 
   bundler: viteBundler(),
 
   theme: plumeTheme({
-    // 添加您的部署域名
-    // hostname: 'https://your_site_url',
+    footer: {
+      message: '',
+      copyright: copyright
+    },
+
+    blog: {
+      postList: false,
+      categories: false,
+      tagsLink: '/tags/',
+      archivesLink: '/archives/',
+    },
     
     plugins: {
       shiki: {
-        // 强烈建议预设代码块高亮语言，插件默认加载所有语言会产生不必要的时间开销
         languages: ['shell', 'bash', 'javascript', 'java', 'c++'],
       },
 
       markdownEnhance: {
         include: true,
         mermaid: true,
-        // flowchart: true,
       },
 
       markdownPower: {
@@ -47,16 +60,14 @@ export default defineUserConfig({
       /**
        * 评论 comments
        */
-      // comment: {
-      //   provider: '', // "Artalk" | "Giscus" | "Twikoo" | "Waline"
-      //   comment: true,
-      //   repo: '',
-      //   repoId: '',
-      //   categoryId: '',
-      //   mapping: 'pathname',
-      //   reactionsEnabled: true,
-      //   inputPosition: 'top',
-      // },
+      comment: {
+        provider: 'Giscus',
+        comment: true,
+        repo: 'hein-hp/giscus', 
+        repoId: 'R_kgDONQTFng', 
+        category: 'Announcements', 
+        categoryId: 'DIC_kwDONQTFns4CkU1V', 
+      },
     },
   }),
 })

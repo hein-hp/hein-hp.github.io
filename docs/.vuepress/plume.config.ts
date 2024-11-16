@@ -3,22 +3,20 @@ import { navbar } from './navbar'
 import { notes } from './notes'
 
 export default defineThemeConfig({
-  logo: '/bat.svg',
-  // your git repo url
+  logo: '/coffee-beans.png',
   docsRepo: '',
   docsDir: 'docs',
   appearance: true,
   profile: {
     avatar: '/images/avator.jpg',
-    name: 'Pika',
-    description: '世界上最自然的语言',
+    name: 'GY',
     circle: true,
-    // location: '',
-    // organization: '',
+    location: '中国-杭州',
   },
   navbar,
   notes,
   social: [
     { icon: 'github', link: 'https://github.com/hein-hp' },
+    { icon: 'instagram', link: 'https://www.instagram.com/pika.hjq/profilecard/?igsh=MXhiYnpqY2dweTB5eg=='},
   ],
 })
