@@ -9,7 +9,7 @@ export const navbar = defineNavbarConfig([
     items: [
       { text: 'structure', link: '/notes/structure/README.md', icon: 'mdi:audio-input-rca' },
       { text: 'algorithm', link: '/notes/algo/README.md', icon: 'mdi:file-code-outline' },
-      { text: 'test', link: '/notes/algo/README.md', icon: 'mdi:file-document-check' },
+      { text: 'test', link: '/notes/test/README.md', icon: 'mdi:file-document-check' },
     ],
     icon: 'mdi:beehive-outline'
   },
