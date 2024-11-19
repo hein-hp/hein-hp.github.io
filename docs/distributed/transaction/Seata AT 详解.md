@@ -5,7 +5,7 @@ permalink: /article/uqysm83u/
 tags:
 - distributed
 - transaction
-- Seata
+- seata
 ---
 ## 前言
 
