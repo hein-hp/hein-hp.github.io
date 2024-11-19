@@ -156,13 +156,16 @@ sequenceDiagram
 	RM->>业务表: 查询业务表生成 BeforeImage，select … for update（加本地锁）
 	RM->>业务表: 执行业务 SQL，注意不提交
 	RM->>业务表: 查询业务表生成 AfterImage
-	RM->>RM: 基于 BeforeImage 和 AfterImage 生成 undo_log
 	RM->>RM: 基于 afterImage 构建全局锁 lockKey
+	RM->>RM: 基于 BeforeImage 和 AfterImage 生成 undo_log
 	RM->>TC: 基于 lockKey 获取全局锁
-	RM->>RM: 获取全局锁失败，则回滚事务然后重试
-	RM->>TC: 获取全局锁成功，通过 XID 注册分支事务
-	RM->>RM: undo_log 写库和业务 SQL 作为同一个事务提交，释放本地锁
-	RM->>TC: 上报分支事务状态
+	alt 获取全局锁成功
+		RM->>TC: 获取全局锁成功，通过 XID 注册分支事务
+		RM->>RM: undo_log 写库和业务 SQL 作为同一个事务提交，释放本地锁
+		RM->>TC: 上报分支事务状态
+	else 获取全局锁失败
+	  RM->>RM: 回滚事务然后重试 …
+	end
 ```
 
 ### 二阶段提交
