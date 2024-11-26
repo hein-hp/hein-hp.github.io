@@ -11,7 +11,7 @@ tags:
 
 上一篇文章我们说了说 Seata AT 模式，这篇文章就来聊一聊 XA 模式，包括两阶段提交、MySQL XA。
 
-其中 Seata XA 的内容主要参考了 [分布式事务如何实现？深入解读 Seata 的 XA 模式 | Apache Seata](https://seata.apache.org/zh-cn/blog/seata-xa-introduce/)，SEATA 项目发起人煊檍。
+其中 Seata XA 的内容主要参考了 [分布式事务如何实现？深入解读 Seata 的 XA 模式 | Apache Seata](https://seata.apache.org/zh-cn/blog/seata-xa-introduce/).
 
 ## 什么是 XA
 
@@ -68,11 +68,11 @@ sequenceDiagram
 
 整个过程是很清晰的，两阶段提交将全局事务划分为了两个阶段。
 
-一阶段，当全局事务开启，协调者向所有参与者发起 prepare 请求，每个参与者检查事务是否可以成功提交，并回复 prepared 或 aborted。
+在一阶段，当全局事务开启，协调者向所有参与者发起 prepare 请求，每个参与者执行事务，但不提交，根据执行的情况回复 prepared 或 aborted。
 
-如果所有参与者都回复 prepared，则进入提交二阶段，如果任何一个参与者回复 aborted，则进入回滚二阶段。
+如果所有参与者的本地事务都执行成功，回复 prepared，则进入提交二阶段，如果任何一个参与者回复 aborted，则进入回滚二阶段。
 
-接着协调者向所有参与者发送 commit 或者 rollback 请求，每个参与者执行相应的操作，并回复确认。
+接着协调者向所有参与者发送 commit 或者 rollback 请求，每个参与者执行相应的操作（最终提交 or 最终回滚），并回复确认。
 
 不过，实际程序中和这个标准的两阶段提交还是有一点区别的，后面在 Seata XA 模式中慢慢体会。
 
@@ -87,7 +87,7 @@ sequenceDiagram
 + xa rollback xid：回滚一个 XA 事务，释放对应的事务资源。
 + xa recover：列出所有当前处于 prepare 状态的 XA 事务。
 
-具体这些命令如何使用你可以参考下面的 Seata XA 中是如何调用的。
+具体这些命令如何使用可以参考 Seata XA 中是如何调用的。
 
 最后，值得一提的是，MySQL 的 XA 事务其实分为外部 XA 和内部 XA。
 
@@ -98,7 +98,7 @@ sequenceDiagram
 
 ::: tip
 
-下面的内容，大多参考 [分布式事务如何实现？深入解读 Seata 的 XA 模式 | Apache Seata](https://seata.apache.org/zh-cn/blog/seata-xa-introduce/)，SEATA 项目发起人煊檍，文章写的很好。
+下面的内容，大多参考 [分布式事务如何实现？深入解读 Seata 的 XA 模式 | Apache Seata](https://seata.apache.org/zh-cn/blog/seata-xa-introduce/)
 
 :::
 
