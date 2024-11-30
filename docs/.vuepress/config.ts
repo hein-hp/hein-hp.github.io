@@ -31,7 +31,7 @@ export default defineUserConfig({
     
     plugins: {
       shiki: {
-        languages: ['shell', 'bash', 'javascript', 'java', 'c++'],
+        languages: ['shell', 'bash', 'javascript', 'java', 'c++', 'xml'],
       },
 
       markdownEnhance: {

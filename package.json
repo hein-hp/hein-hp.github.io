@@ -19,12 +19,12 @@
     "@vuepress/bundler-vite": "2.0.0-rc.18",
     "http-server": "^14.1.1",
     "sass-embedded": "^1.81.0",
-    "typescript": "^5.6.3",
+    "typescript": "^5.7.2",
     "vue": "^3.5.13",
     "vuepress": "2.0.0-rc.18",
-    "vuepress-theme-plume": "1.0.0-rc.116"
+    "vuepress-theme-plume": "1.0.0-rc.119"
   },
   "dependencies": {
-    "mermaid": "^11.4.0"
+    "mermaid": "^11.4.1"
   }
 }
