@@ -74,7 +74,21 @@ sequenceDiagram
 
 接着协调者向所有参与者发送 commit 或者 rollback 请求，每个参与者执行相应的操作（最终提交 or 最终回滚），并回复确认。
 
-不过，实际程序中和这个标准的两阶段提交还是有一点区别的，后面在 Seata XA 模式中慢慢体会。
+不过，两阶段提交协议远不止我们上面描述的这么简单，如果要进行实际方案落地，需要考虑的细节是很多的，尤其是多节点之间由于网络通信导致的超时问题、协调者的单点故障以及节点的故障宕机问题。
+
+对于协调者的单点问题来说，我们可以通过部署协调者高可用集群，而网络通信超时问题就不是那么好解决了。
+
+针对网络超时的问题，在工程上的 2PC 的落地实现中，至少要做到即使出现网络通信超时或者宕机（失联）的情况，在等待一段时间（进行网络重连或者节点重启）后，最终一定可以达到一致的状态，所有的分支事务，要么全部提交、要么全部回滚。
+
+这里我们说的最终达到一致的状态和保证最终一致性的分布式事务是有区别的，在 2PC 中，达到最终一致性的过程会持久锁定相关的事务资源，是能够完全保证全局强一致性的。
+
+那要是节点宕机不能被修复怎么办？
+
+在 1985 年 Fischer, Lynch, Paterson 提出了定理：
+
+no distributed asynchronous protocol can correctly agree in presence of crash-failures
+
+即：没有一个分布式异步协议能够在出现崩溃故障时正确地达成一致。
 
 ## MySQL XA
 
@@ -324,6 +338,55 @@ RM->>RM: xa rollback XA-Xid
 ```
 
 可以看到，其实 Seata XA 模式还是很简单的，它主要依赖于资源对 XA 协议的支持，Seata 自身只是起到一个串联的作用。
+
+## Seata 如何解决 2PC 的工程化难点
+
+### 单点故障
+
+TC 作为 Seata 中的一个最为关键的角色，如果出现故障，那一定是最为致命的，尤其是在 XA 模式的二阶段，所以为了应对 TC 的单点故障问题，我们需要部署 TC 集群来实现 TC 的高可用。
+
+参考下面基于 k8s 部署 Seata Server 高可用部署的案例：[https://seata.apache.org/zh-cn/blog/seata-ha-practice/](https://seata.apache.org/zh-cn/blog/seata-ha-practice/)
+
+### 网络超时和节点宕机
+
+针对网络超时和节点宕机，Seata 的做法主要有三点：
+
+1. Seata 服务端的重试线程池
+2. 可持久化事务日志，包括 global_table、branch_table 等
+3. 利用 XA 资源本身的可回滚、持久化的能力（当然我们前面也说了，AT 由 undo log 来实现、TCC 和 Saga 由业务方自行实现）
+
+和 Seata 服务相关的是重试线程池和可持久化事务日志，所以我们重点聊一聊。
+
+在 Seata 服务端，TC 创建时会初始化下面的定时线程池用于处理不同状态下的全局事务，这些线程池负责推进那些可能因网络问题或节点故障而停滞的事务。
+
+```java
+public void init() {
+    // 默认每隔 1s 查询全局事务状态为 TIMEOUT_ROLLBACKING、TIMEOUT_ROLLBACK_RETRYING、ROLLBACK_RETRYING 的事务，发起全局回滚
+    retryRollbacking.scheduleAtFixedRate(() -> SessionHolder.distributedLockAndExecute(RETRY_ROLLBACKING, this::handleRetryRollbacking), 0, ROLLBACKING_RETRY_PERIOD, TimeUnit.MILLISECONDS);
+    // 默认每隔 1s 查询全局事务状态为 COMMIT_RETRYING COMMITTED 的事务，发起全局提交，为什么有 COMMITTED？可能是因为全局事务状态是 COMMITTED 但是存在分支事务还未提交的情况
+    retryCommitting.scheduleAtFixedRate(() -> SessionHolder.distributedLockAndExecute(RETRY_COMMITTING, this::handleRetryCommitting), 0, COMMITTING_RETRY_PERIOD, TimeUnit.MILLISECONDS);
+    // 默认每隔 1s 查询全局事务状态为 ASYNC_COMMITTING 的事务，发起全局提交，主要用在 AT 模式
+    asyncCommitting.scheduleAtFixedRate(() -> SessionHolder.distributedLockAndExecute(ASYNC_COMMITTING, this::handleAsyncCommitting), 0, ASYNC_COMMITTING_RETRY_PERIOD, TimeUnit.MILLISECONDS);
+    // 延迟 60s 后开始，每隔一天删除一次 undo log
+    undoLogDelete.scheduleAtFixedRate(() -> SessionHolder.distributedLockAndExecute(UNDOLOG_DELETE, this::undoLogDelete), UNDO_LOG_DELAY_DELETE_PERIOD, UNDO_LOG_DELETE_PERIOD, TimeUnit.MILLISECONDS);
+    // 默认每隔 1s 查询处于 Begin 状态的全局事务，如果全局事务超时则更新全局事务状态为 TIMEOUT_ROLLBACKING，由 retryRollback 线程池发起全局回滚
+    timeoutCheck.scheduleAtFixedRate(() -> SessionHolder.distributedLockAndExecute(TX_TIMEOUT_CHECK, this::timeoutCheck), 0, TIMEOUT_RETRY_PERIOD, TimeUnit.MILLISECONDS);
+    // 找出全局事务状态为 ROLLBACKING 的事务，并对已经超时的事务再次发起全局事务回滚，根据一定的规则计算下一次调度的时间
+    rollbackingSchedule(0);
+    // 找出全局事务状态为 COMMITTING 的事务，并对已经超时的事务再次发起全局事务提交，根据一定的规则计算下一次调度的时间
+    committingSchedule(0);
+}
+```
+
+其次是可持久化事务日志，TC 在每一个阶段都会将对应的全局事务和分支事务状态做持久化，这样即使 TC 或者 RM 发生宕机，只要最终节点重启，也可以从持久化存储中恢复事务状态，继续之前的操作，而可持久化日志结合上述提到的重试线程池，可以确保即使在网络不稳定或者服务暂时不可用的情况下，事务最终仍然能够被正确地提交或回滚。
+
+但是我们知道 XA 模式会锁定事务资源，如果 TC 或者 RM 一直不能重启，那么事务资源就会一直被锁定。
+
+针对这个问题，如果是 RM 宕机，TC 会进行重试，我们只需要配置重试的超时时间即可，当重试时间到分支事务还未提交，就可以最终结束这个失败的分支事务，记录日志，转人工处理。
+
+但是，一旦 TC 宕机，也就不存在重试超时时间之说了，所有的分支事务都会处于锁定状态，不能提交。
+
+事实上，我也在本地尝试过让 TC 在二阶段宕机，实际的结果是所有的分支事务都会处于锁定状态，直到 TC 重启，所以如果要使用 Seata，请尽量部署 TC 高可用集群。
 
 ### 最后再举个栗子
 

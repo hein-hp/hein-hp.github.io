@@ -4,7 +4,6 @@ createTime: 2024/11/30 19:15:49
 permalink: /article/zfe2hhcs/
 tags:
 - jvm
-- agent
 ---
 ## 前言
 
@@ -594,6 +593,3 @@ public static void jad(Instrumentation inst, Scanner sc) {
     }
 }
 ```
-
-## Agent 插桩原理
-TODO
