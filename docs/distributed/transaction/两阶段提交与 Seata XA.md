@@ -314,7 +314,6 @@ sequenceDiagram
 	participant TC
 	participant RM
 TM->>TC: 发起全局事务提交
-TC->>TC: 修改全局事务状态为 Committing
 TC->>TC: 关闭全局事务，防止后续还有分支注册
 TC->>TC: 修改全局事务状态为 Committing
 TC->>RM: 由 TC 向所有 RM 发起分支事务提交
