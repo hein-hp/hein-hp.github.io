@@ -1,0 +1,682 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=generator content="Hugo 0.148.1"><meta http-equiv=X-UA-Compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta name=author content="He Jin"><meta property="og:url" content="https://blog.remind.me/posts/%E6%B5%85%E8%B0%88-j.u.c-%E7%BA%BF%E7%A8%8B%E6%B1%A0%E6%A0%B8%E5%BF%83%E6%BA%90%E7%A0%81/"><link rel=canonical href=https://blog.remind.me/posts/%E6%B5%85%E8%B0%88-j.u.c-%E7%BA%BF%E7%A8%8B%E6%B1%A0%E6%A0%B8%E5%BF%83%E6%BA%90%E7%A0%81/><link rel=apple-touch-icon href=/images/favicon.png><link rel=icon href=/images/favicon.png><link rel=shortcut href=/images/favicon.png><link rel=alternate type=application/atom+xml href=https://blog.remind.me/index.xml title="Hejin's Blog"><script type=application/ld+json>{"@context":"http://schema.org","@type":"BlogPosting","mainEntityOfPage":{"@type":"WebPage","@id":"https:\/\/blog.remind.me\/"},"articleSection":"posts","name":"浅谈 J.U.C 线程池核心源码","headline":"浅谈 J.U.C 线程池核心源码","description":"简单分析一下线程池的运行机制、Worker、线程池中的锁、异常处理等源码。\n线程池运行机制 这里简单提一下线程池的运行机制，相信大家对这个并不陌生。\n当一个 Task 被提交，首先检查当前线程池中的工作线程数量，如果尚未超过 corePoolSize，那么可以创建一个新的 Worker，将这个 Task 作为它的 firstTask 执行。\n如果此时工作线程的数量来到了 corePoolSize，那么线程池尝试将这个 Task 加入到队列中，后续由线程池中的某个线程从队列中拿到这个 Task 执行。\n如果创建线程池时设置的队列是一个有界队列，那么当任务数量超出队列容量时，再次尝试创建一个新的 Worker。\n如果当前线程池中的工作线程数量来到了 maximumPoolSize，显然创建新 Worker 失败，线程池执行预设的拒绝策略，否则该 Task 作为新 Worker 的 firstTask 执行。\n与这个机制相关的代码如下：\npublic void execute(Runnable command) { if (command == null) throw new NullPointerException(); int c = ctl.get(); \/\/ Worker 数量 \u0026lt; corePoolSize，增加 Worker 来执行 command if (workerCountOf(c) \u0026lt; corePoolSize) { if (addWorker(command, true)) return; c = ctl.get(); } \/\/ Worker 数量超过 corePoolSize，那么就先入队 if (isRunning(c) \u0026amp;\u0026amp; workQueue.offer(command)) { int recheck = ctl.get(); if (!isRunning(recheck) \u0026amp;\u0026amp; remove(command)) reject(command); else if (workerCountOf(recheck) == 0) addWorker(null, false); } \/\/ 队列满，就增加 Worker 来执行 command else if (!addWorker(command, false)) \/\/ 增加 Worker 失败，就要调用拒绝策略了 reject(command); } 当然，这只是一个粗略的线程池运行机制，更多细节的内容，接着往下看。\n","inLanguage":"en-US","author":"","creator":"","publisher":"","accountablePerson":"","copyrightHolder":"","copyrightYear":"2025","datePublished":"2025-03-04 00:00:00 \u002b0000 UTC","dateModified":"2025-03-04 00:00:00 \u002b0000 UTC","url":"https:\/\/blog.remind.me\/posts\/%E6%B5%85%E8%B0%88-j.u.c-%E7%BA%BF%E7%A8%8B%E6%B1%A0%E6%A0%B8%E5%BF%83%E6%BA%90%E7%A0%81\/","keywords":[]}</script><title>浅谈 J.U.C 线程池核心源码</title><meta property="og:title" content="浅谈 J.U.C 线程池核心源码"><meta property="og:type" content="article"><meta property="og:description" content="简单分析一下线程池的运行机制、Worker、线程池中的锁、异常处理等源码。
+线程池运行机制 这里简单提一下线程池的运行机制，相信大家对这个并不陌生。
+当一个 Task 被提交，首先检查当前线程池中的工作线程数量，如果尚未超过 corePoolSize，那么可以创建一个新的 Worker，将这个 Task 作为它的 firstTask 执行。
+如果此时工作线程的数量来到了 corePoolSize，那么线程池尝试将这个 Task 加入到队列中，后续由线程池中的某个线程从队列中拿到这个 Task 执行。
+如果创建线程池时设置的队列是一个有界队列，那么当任务数量超出队列容量时，再次尝试创建一个新的 Worker。
+如果当前线程池中的工作线程数量来到了 maximumPoolSize，显然创建新 Worker 失败，线程池执行预设的拒绝策略，否则该 Task 作为新 Worker 的 firstTask 执行。
+与这个机制相关的代码如下：
+public void execute(Runnable command) { if (command == null) throw new NullPointerException(); int c = ctl.get(); // Worker 数量 < corePoolSize，增加 Worker 来执行 command if (workerCountOf(c) < corePoolSize) { if (addWorker(command, true)) return; c = ctl.get(); } // Worker 数量超过 corePoolSize，那么就先入队 if (isRunning(c) && workQueue.offer(command)) { int recheck = ctl.get(); if (!isRunning(recheck) && remove(command)) reject(command); else if (workerCountOf(recheck) == 0) addWorker(null, false); } // 队列满，就增加 Worker 来执行 command else if (!addWorker(command, false)) // 增加 Worker 失败，就要调用拒绝策略了 reject(command); } 当然，这只是一个粗略的线程池运行机制，更多细节的内容，接着往下看。
+"><meta name=description content="简单分析一下线程池的运行机制、Worker、线程池中的锁、异常处理等源码。
+线程池运行机制 这里简单提一下线程池的运行机制，相信大家对这个并不陌生。
+当一个 Task 被提交，首先检查当前线程池中的工作线程数量，如果尚未超过 corePoolSize，那么可以创建一个新的 Worker，将这个 Task 作为它的 firstTask 执行。
+如果此时工作线程的数量来到了 corePoolSize，那么线程池尝试将这个 Task 加入到队列中，后续由线程池中的某个线程从队列中拿到这个 Task 执行。
+如果创建线程池时设置的队列是一个有界队列，那么当任务数量超出队列容量时，再次尝试创建一个新的 Worker。
+如果当前线程池中的工作线程数量来到了 maximumPoolSize，显然创建新 Worker 失败，线程池执行预设的拒绝策略，否则该 Task 作为新 Worker 的 firstTask 执行。
+与这个机制相关的代码如下：
+public void execute(Runnable command) { if (command == null) throw new NullPointerException(); int c = ctl.get(); // Worker 数量 < corePoolSize，增加 Worker 来执行 command if (workerCountOf(c) < corePoolSize) { if (addWorker(command, true)) return; c = ctl.get(); } // Worker 数量超过 corePoolSize，那么就先入队 if (isRunning(c) && workQueue.offer(command)) { int recheck = ctl.get(); if (!isRunning(recheck) && remove(command)) reject(command); else if (workerCountOf(recheck) == 0) addWorker(null, false); } // 队列满，就增加 Worker 来执行 command else if (!addWorker(command, false)) // 增加 Worker 失败，就要调用拒绝策略了 reject(command); } 当然，这只是一个粗略的线程池运行机制，更多细节的内容，接着往下看。
+"><meta property="og:locale" content="cn"><meta property="og:image" content="/images/favicon.png"><style>body{font-family:bree serif,sans-serif;-webkit-font-smoothing:antialiased;margin:0 20px}article{max-width:800px;margin-left:auto;margin-right:auto}a{color:#000;text-decoration:none}a:hover{font-weight:600;text-decoration:underline}.post-ads{margin:50px 0}.markdown-body{font-size:18px;max-width:100%}.markdown-body a{text-decoration:underline;text-decoration-color:#000}.markdown-body blockquote{margin:0;padding:0 1em;color:#57606a;border-left:.25em solid #d0d7de}.markdown-body pre{padding:8px 12px;overflow:auto;border-radius:6px;font-size:14px;line-height:1.4}.markdown-body code{padding:.2em .4em;font-size:85%;background-color:#f6f8fa;border-radius:6px}.markdown-body pre>code{padding:0;font-size:100%;background-color:inherit;border:0}.Chinese .markdown-body{line-height:200%}.site-date-catalog{font-size:2rem}.header-title{font-size:2rem;font-weight:700;margin-top:32px;font-family:bungee shade,sans-serif}.header-title a{text-decoration:none}.header-subtitle{color:#666}.header-items{margin:10px 0}.header-item{margin:0 5px}.header-line{width:100%;border-width:2px;border-color:#482936;border-style:solid none none none}.lang-switch{font-weight:600}#posts-list{min-height:600px}.posts-line{font-size:1.2rem;margin:12px 0}.posts-categories{font-size:.8rem;margin:auto;text-align:center}.posts-category{padding:3px 0;border:#000 2px solid;border-radius:5px}.site-footer{margin-top:50px;padding:20px 0;border-top:2px solid #eee}.footer-content{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;font-size:.9rem;color:#666}.footer-copyright{margin:0 8px}.footer-separator{margin:0 8px;color:#ccc}.footer-license{margin:0 8px}.footer-license a{color:#666;text-decoration:none;border-bottom:1px dotted #666}.footer-license a:hover{color:#000;border-bottom-color:#000;font-weight:400}.site-footer-item{margin-right:12px}.post-header{margin-bottom:50px}.post-title{font-size:2rem;font-weight:600}.post-tags{display:inline;font-weight:600;padding:2px 5px;margin-right:6px;border:#000 2px solid;border-radius:5px}.post-date{font-weight:800}.post-author{float:right;font-weight:600}.page-content{min-height:60%}.post-content{margin-bottom:50px}.post-content p{hyphens:auto;line-height:1.8;text-justify:ideographic;margin-bottom:1em}.post-content img{max-width:100%;display:block;margin-right:auto;margin-top:6px}.rounded-shadow-image{border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,8%),0 2px 4px rgba(0,0,0,5%);transition:transform .3s ease,box-shadow .3s ease;margin:20px auto}.rounded-shadow-image:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,0,0,.12),0 3px 6px rgba(0,0,0,8%)}.post-content .post-gallery{display:flex;flex-wrap:wrap;gap:6px}.post-content .post-gallery img{margin-right:auto;margin-top:auto;width:calc(50% - 3px)}.related-content{border-width:3px;border-style:solid;border-color:#000;padding:0 10px;margin-bottom:50px;margin-top:100px}.related-content li{margin:5px 0}.taxonomy-term{font-size:3rem}.gallery-img{text-align:center}.gallery-img span{text-align:center}.gallery-img-desc{font-size:.8em;font-weight:800}#disqus_thread{position:relative}#disqus_thread:after{content:"";display:block;height:55px;width:100%;position:absolute;bottom:0;background:#fff}@media screen and (max-width:600px){.header-title,.header-subtitle,.header-items{}.posts-line{font-size:16px}.markdown-body{font-size:16px}.post-title{font-size:2rem}.post-content p{letter-spacing:.05em}.post-content .post-gallery img{width:100%}.rounded-shadow-image{border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,6%),0 1px 2px rgba(0,0,0,4%);margin:16px auto}.rounded-shadow-image:hover{transform:none;box-shadow:0 2px 8px rgba(0,0,0,6%),0 1px 2px rgba(0,0,0,4%)}.footer-content{flex-direction:column;text-align:center}.footer-separator{display:none}.footer-copyright,.footer-license{margin:4px 0}}@media screen and (max-width:48em){.posts-category{display:none}}</style><style>.container,.container-fluid{margin-right:auto;margin-left:auto}.container-fluid{padding-right:2rem;padding-left:2rem}.row{box-sizing:border-box;display:-webkit-box;display:-ms-flexbox;display:flex;-webkit-box-flex:0;-ms-flex:0 1 auto;flex:initial;-webkit-box-orient:horizontal;-webkit-box-direction:normal;-ms-flex-direction:row;flex-direction:row;-ms-flex-wrap:wrap;flex-wrap:wrap;margin-right:-.5rem;margin-left:-.5rem}.row.reverse{-webkit-box-orient:horizontal;-webkit-box-direction:reverse;-ms-flex-direction:row-reverse;flex-direction:row-reverse}.col.reverse{-webkit-box-orient:vertical;-webkit-box-direction:reverse;-ms-flex-direction:column-reverse;flex-direction:column-reverse}.col-xs,.col-xs-1,.col-xs-10,.col-xs-11,.col-xs-12,.col-xs-2,.col-xs-3,.col-xs-4,.col-xs-5,.col-xs-6,.col-xs-7,.col-xs-8,.col-xs-9,.col-xs-offset-0,.col-xs-offset-1,.col-xs-offset-10,.col-xs-offset-11,.col-xs-offset-12,.col-xs-offset-2,.col-xs-offset-3,.col-xs-offset-4,.col-xs-offset-5,.col-xs-offset-6,.col-xs-offset-7,.col-xs-offset-8,.col-xs-offset-9{box-sizing:border-box;-webkit-box-flex:0;-ms-flex:0 0 auto;flex:none;padding-right:.5rem;padding-left:.5rem}.col-xs{-webkit-box-flex:1;-ms-flex-positive:1;flex-grow:1;-ms-flex-preferred-size:0;flex-basis:0;max-width:100%}.col-xs-1{-ms-flex-preferred-size:8.33333333%;flex-basis:8.33333333%;max-width:8.33333333%}.col-xs-2{-ms-flex-preferred-size:16.66666667%;flex-basis:16.66666667%;max-width:16.66666667%}.col-xs-3{-ms-flex-preferred-size:25%;flex-basis:25%;max-width:25%}.col-xs-4{-ms-flex-preferred-size:33.33333333%;flex-basis:33.33333333%;max-width:33.33333333%}.col-xs-5{-ms-flex-preferred-size:41.66666667%;flex-basis:41.66666667%;max-width:41.66666667%}.col-xs-6{-ms-flex-preferred-size:50%;flex-basis:50%;max-width:50%}.col-xs-7{-ms-flex-preferred-size:58.33333333%;flex-basis:58.33333333%;max-width:58.33333333%}.col-xs-8{-ms-flex-preferred-size:66.66666667%;flex-basis:66.66666667%;max-width:66.66666667%}.col-xs-9{-ms-flex-preferred-size:75%;flex-basis:75%;max-width:75%}.col-xs-10{-ms-flex-preferred-size:83.33333333%;flex-basis:83.33333333%;max-width:83.33333333%}.col-xs-11{-ms-flex-preferred-size:91.66666667%;flex-basis:91.66666667%;max-width:91.66666667%}.col-xs-12{-ms-flex-preferred-size:100%;flex-basis:100%;max-width:100%}.col-xs-offset-0{margin-left:0}.col-xs-offset-1{margin-left:8.33333333%}.col-xs-offset-2{margin-left:16.66666667%}.col-xs-offset-3{margin-left:25%}.col-xs-offset-4{margin-left:33.33333333%}.col-xs-offset-5{margin-left:41.66666667%}.col-xs-offset-6{margin-left:50%}.col-xs-offset-7{margin-left:58.33333333%}.col-xs-offset-8{margin-left:66.66666667%}.col-xs-offset-9{margin-left:75%}.col-xs-offset-10{margin-left:83.33333333%}.col-xs-offset-11{margin-left:91.66666667%}.start-xs{-webkit-box-pack:start;-ms-flex-pack:start;justify-content:flex-start;text-align:start}.center-xs{-webkit-box-pack:center;-ms-flex-pack:center;justify-content:center;text-align:center}.end-xs{-webkit-box-pack:end;-ms-flex-pack:end;justify-content:flex-end;text-align:end}.top-xs{-webkit-box-align:start;-ms-flex-align:start;align-items:flex-start}.middle-xs{-webkit-box-align:center;-ms-flex-align:center;align-items:center}.bottom-xs{-webkit-box-align:end;-ms-flex-align:end;align-items:flex-end}.around-xs{-ms-flex-pack:distribute;justify-content:space-around}.between-xs{-webkit-box-pack:justify;-ms-flex-pack:justify;justify-content:space-between}.first-xs{-webkit-box-ordinal-group:0;-ms-flex-order:-1;order:-1}.last-xs{-webkit-box-ordinal-group:2;-ms-flex-order:1;order:1}@media only screen and (min-width:48em){.container{width:49rem}.col-sm,.col-sm-1,.col-sm-10,.col-sm-11,.col-sm-12,.col-sm-2,.col-sm-3,.col-sm-4,.col-sm-5,.col-sm-6,.col-sm-7,.col-sm-8,.col-sm-9,.col-sm-offset-0,.col-sm-offset-1,.col-sm-offset-10,.col-sm-offset-11,.col-sm-offset-12,.col-sm-offset-2,.col-sm-offset-3,.col-sm-offset-4,.col-sm-offset-5,.col-sm-offset-6,.col-sm-offset-7,.col-sm-offset-8,.col-sm-offset-9{box-sizing:border-box;-webkit-box-flex:0;-ms-flex:0 0 auto;flex:none;padding-right:.5rem;padding-left:.5rem}.col-sm{-webkit-box-flex:1;-ms-flex-positive:1;flex-grow:1;-ms-flex-preferred-size:0;flex-basis:0;max-width:100%}.col-sm-1{-ms-flex-preferred-size:8.33333333%;flex-basis:8.33333333%;max-width:8.33333333%}.col-sm-2{-ms-flex-preferred-size:16.66666667%;flex-basis:16.66666667%;max-width:16.66666667%}.col-sm-3{-ms-flex-preferred-size:25%;flex-basis:25%;max-width:25%}.col-sm-4{-ms-flex-preferred-size:33.33333333%;flex-basis:33.33333333%;max-width:33.33333333%}.col-sm-5{-ms-flex-preferred-size:41.66666667%;flex-basis:41.66666667%;max-width:41.66666667%}.col-sm-6{-ms-flex-preferred-size:50%;flex-basis:50%;max-width:50%}.col-sm-7{-ms-flex-preferred-size:58.33333333%;flex-basis:58.33333333%;max-width:58.33333333%}.col-sm-8{-ms-flex-preferred-size:66.66666667%;flex-basis:66.66666667%;max-width:66.66666667%}.col-sm-9{-ms-flex-preferred-size:75%;flex-basis:75%;max-width:75%}.col-sm-10{-ms-flex-preferred-size:83.33333333%;flex-basis:83.33333333%;max-width:83.33333333%}.col-sm-11{-ms-flex-preferred-size:91.66666667%;flex-basis:91.66666667%;max-width:91.66666667%}.col-sm-12{-ms-flex-preferred-size:100%;flex-basis:100%;max-width:100%}.col-sm-offset-0{margin-left:0}.col-sm-offset-1{margin-left:8.33333333%}.col-sm-offset-2{margin-left:16.66666667%}.col-sm-offset-3{margin-left:25%}.col-sm-offset-4{margin-left:33.33333333%}.col-sm-offset-5{margin-left:41.66666667%}.col-sm-offset-6{margin-left:50%}.col-sm-offset-7{margin-left:58.33333333%}.col-sm-offset-8{margin-left:66.66666667%}.col-sm-offset-9{margin-left:75%}.col-sm-offset-10{margin-left:83.33333333%}.col-sm-offset-11{margin-left:91.66666667%}.start-sm{-webkit-box-pack:start;-ms-flex-pack:start;justify-content:flex-start;text-align:start}.center-sm{-webkit-box-pack:center;-ms-flex-pack:center;justify-content:center;text-align:center}.end-sm{-webkit-box-pack:end;-ms-flex-pack:end;justify-content:flex-end;text-align:end}.top-sm{-webkit-box-align:start;-ms-flex-align:start;align-items:flex-start}.middle-sm{-webkit-box-align:center;-ms-flex-align:center;align-items:center}.bottom-sm{-webkit-box-align:end;-ms-flex-align:end;align-items:flex-end}.around-sm{-ms-flex-pack:distribute;justify-content:space-around}.between-sm{-webkit-box-pack:justify;-ms-flex-pack:justify;justify-content:space-between}.first-sm{-webkit-box-ordinal-group:0;-ms-flex-order:-1;order:-1}.last-sm{-webkit-box-ordinal-group:2;-ms-flex-order:1;order:1}}@media only screen and (min-width:64em){.container{width:65rem}.col-md,.col-md-1,.col-md-10,.col-md-11,.col-md-12,.col-md-2,.col-md-3,.col-md-4,.col-md-5,.col-md-6,.col-md-7,.col-md-8,.col-md-9,.col-md-offset-0,.col-md-offset-1,.col-md-offset-10,.col-md-offset-11,.col-md-offset-12,.col-md-offset-2,.col-md-offset-3,.col-md-offset-4,.col-md-offset-5,.col-md-offset-6,.col-md-offset-7,.col-md-offset-8,.col-md-offset-9{box-sizing:border-box;-webkit-box-flex:0;-ms-flex:0 0 auto;flex:none;padding-right:.5rem;padding-left:.5rem}.col-md{-webkit-box-flex:1;-ms-flex-positive:1;flex-grow:1;-ms-flex-preferred-size:0;flex-basis:0;max-width:100%}.col-md-1{-ms-flex-preferred-size:8.33333333%;flex-basis:8.33333333%;max-width:8.33333333%}.col-md-2{-ms-flex-preferred-size:16.66666667%;flex-basis:16.66666667%;max-width:16.66666667%}.col-md-3{-ms-flex-preferred-size:25%;flex-basis:25%;max-width:25%}.col-md-4{-ms-flex-preferred-size:33.33333333%;flex-basis:33.33333333%;max-width:33.33333333%}.col-md-5{-ms-flex-preferred-size:41.66666667%;flex-basis:41.66666667%;max-width:41.66666667%}.col-md-6{-ms-flex-preferred-size:50%;flex-basis:50%;max-width:50%}.col-md-7{-ms-flex-preferred-size:58.33333333%;flex-basis:58.33333333%;max-width:58.33333333%}.col-md-8{-ms-flex-preferred-size:66.66666667%;flex-basis:66.66666667%;max-width:66.66666667%}.col-md-9{-ms-flex-preferred-size:75%;flex-basis:75%;max-width:75%}.col-md-10{-ms-flex-preferred-size:83.33333333%;flex-basis:83.33333333%;max-width:83.33333333%}.col-md-11{-ms-flex-preferred-size:91.66666667%;flex-basis:91.66666667%;max-width:91.66666667%}.col-md-12{-ms-flex-preferred-size:100%;flex-basis:100%;max-width:100%}.col-md-offset-0{margin-left:0}.col-md-offset-1{margin-left:8.33333333%}.col-md-offset-2{margin-left:16.66666667%}.col-md-offset-3{margin-left:25%}.col-md-offset-4{margin-left:33.33333333%}.col-md-offset-5{margin-left:41.66666667%}.col-md-offset-6{margin-left:50%}.col-md-offset-7{margin-left:58.33333333%}.col-md-offset-8{margin-left:66.66666667%}.col-md-offset-9{margin-left:75%}.col-md-offset-10{margin-left:83.33333333%}.col-md-offset-11{margin-left:91.66666667%}.start-md{-webkit-box-pack:start;-ms-flex-pack:start;justify-content:flex-start;text-align:start}.center-md{-webkit-box-pack:center;-ms-flex-pack:center;justify-content:center;text-align:center}.end-md{-webkit-box-pack:end;-ms-flex-pack:end;justify-content:flex-end;text-align:end}.top-md{-webkit-box-align:start;-ms-flex-align:start;align-items:flex-start}.middle-md{-webkit-box-align:center;-ms-flex-align:center;align-items:center}.bottom-md{-webkit-box-align:end;-ms-flex-align:end;align-items:flex-end}.around-md{-ms-flex-pack:distribute;justify-content:space-around}.between-md{-webkit-box-pack:justify;-ms-flex-pack:justify;justify-content:space-between}.first-md{-webkit-box-ordinal-group:0;-ms-flex-order:-1;order:-1}.last-md{-webkit-box-ordinal-group:2;-ms-flex-order:1;order:1}}@media only screen and (min-width:75em){.container{width:76rem}.col-lg,.col-lg-1,.col-lg-10,.col-lg-11,.col-lg-12,.col-lg-2,.col-lg-3,.col-lg-4,.col-lg-5,.col-lg-6,.col-lg-7,.col-lg-8,.col-lg-9,.col-lg-offset-0,.col-lg-offset-1,.col-lg-offset-10,.col-lg-offset-11,.col-lg-offset-12,.col-lg-offset-2,.col-lg-offset-3,.col-lg-offset-4,.col-lg-offset-5,.col-lg-offset-6,.col-lg-offset-7,.col-lg-offset-8,.col-lg-offset-9{box-sizing:border-box;-webkit-box-flex:0;-ms-flex:0 0 auto;flex:none;padding-right:.5rem;padding-left:.5rem}.col-lg{-webkit-box-flex:1;-ms-flex-positive:1;flex-grow:1;-ms-flex-preferred-size:0;flex-basis:0;max-width:100%}.col-lg-1{-ms-flex-preferred-size:8.33333333%;flex-basis:8.33333333%;max-width:8.33333333%}.col-lg-2{-ms-flex-preferred-size:16.66666667%;flex-basis:16.66666667%;max-width:16.66666667%}.col-lg-3{-ms-flex-preferred-size:25%;flex-basis:25%;max-width:25%}.col-lg-4{-ms-flex-preferred-size:33.33333333%;flex-basis:33.33333333%;max-width:33.33333333%}.col-lg-5{-ms-flex-preferred-size:41.66666667%;flex-basis:41.66666667%;max-width:41.66666667%}.col-lg-6{-ms-flex-preferred-size:50%;flex-basis:50%;max-width:50%}.col-lg-7{-ms-flex-preferred-size:58.33333333%;flex-basis:58.33333333%;max-width:58.33333333%}.col-lg-8{-ms-flex-preferred-size:66.66666667%;flex-basis:66.66666667%;max-width:66.66666667%}.col-lg-9{-ms-flex-preferred-size:75%;flex-basis:75%;max-width:75%}.col-lg-10{-ms-flex-preferred-size:83.33333333%;flex-basis:83.33333333%;max-width:83.33333333%}.col-lg-11{-ms-flex-preferred-size:91.66666667%;flex-basis:91.66666667%;max-width:91.66666667%}.col-lg-12{-ms-flex-preferred-size:100%;flex-basis:100%;max-width:100%}.col-lg-offset-0{margin-left:0}.col-lg-offset-1{margin-left:8.33333333%}.col-lg-offset-2{margin-left:16.66666667%}.col-lg-offset-3{margin-left:25%}.col-lg-offset-4{margin-left:33.33333333%}.col-lg-offset-5{margin-left:41.66666667%}.col-lg-offset-6{margin-left:50%}.col-lg-offset-7{margin-left:58.33333333%}.col-lg-offset-8{margin-left:66.66666667%}.col-lg-offset-9{margin-left:75%}.col-lg-offset-10{margin-left:83.33333333%}.col-lg-offset-11{margin-left:91.66666667%}.start-lg{-webkit-box-pack:start;-ms-flex-pack:start;justify-content:flex-start;text-align:start}.center-lg{-webkit-box-pack:center;-ms-flex-pack:center;justify-content:center;text-align:center}.end-lg{-webkit-box-pack:end;-ms-flex-pack:end;justify-content:flex-end;text-align:end}.top-lg{-webkit-box-align:start;-ms-flex-align:start;align-items:flex-start}.middle-lg{-webkit-box-align:center;-ms-flex-align:center;align-items:center}.bottom-lg{-webkit-box-align:end;-ms-flex-align:end;align-items:flex-end}.around-lg{-ms-flex-pack:distribute;justify-content:space-around}.between-lg{-webkit-box-pack:justify;-ms-flex-pack:justify;justify-content:space-between}.first-lg{-webkit-box-ordinal-group:0;-ms-flex-order:-1;order:-1}.last-lg{-webkit-box-ordinal-group:2;-ms-flex-order:1;order:1}}</style><link href=/index.xml rel=alternate type=application/rss+xml title="Hejin's Blog"><link rel=preconnect href=https://fonts.gstatic.com><link href="https://fonts.googleapis.com/css?family=Bree+Serif|Bungee+Shade" rel=stylesheet><script async src="https://www.googletagmanager.com/gtag/js?id=UA-xxx"></script></head><body><article class="post Chinese" id=article><div class=row><div class=col-xs-12><div class=site-header><header><div class=header-title><a href=/>REMIND ME</a></div><div class=header-subtitle>What we forget shapes us; what we remember defines us.</div></header><div class="row end-md header-items"><div class=header-item><a href=https://github.com/hein-hp target=_blank>Github</a></div><div class=header-item><a href target=_blank>About</a></div></div><div class=row></div><div class=header-line></div></div><header class=post-header><h1 class=post-title>浅谈 J.U.C 线程池核心源码</h1><div class="row post-desc"><div class=col-xs-6><time class=post-date datetime="2025-03-04 00:00:00 UTC">04 Mar 2025</time></div><div class=col-xs-6><div class=post-author><a target=_blank href>@He Jin</a></div></div></div></header><div class="post-content markdown-body"><p>简单分析一下线程池的运行机制、Worker、线程池中的锁、异常处理等源码。</p><h2 id=线程池运行机制>线程池运行机制</h2><p>这里简单提一下线程池的运行机制，相信大家对这个并不陌生。</p><p><img src=assets/b437fcb41ec5f855446edb960a91045d.png alt class=rounded-shadow-image loading=lazy></p><p>当一个 Task 被提交，首先检查当前线程池中的工作线程数量，如果尚未超过 corePoolSize，那么可以创建一个新的 Worker，将这个 Task 作为它的 firstTask 执行。</p><p>如果此时工作线程的数量来到了 corePoolSize，那么线程池尝试将这个 Task 加入到队列中，后续由线程池中的某个线程从队列中拿到这个 Task 执行。</p><p>如果创建线程池时设置的队列是一个有界队列，那么当任务数量超出队列容量时，再次尝试创建一个新的 Worker。</p><p>如果当前线程池中的工作线程数量来到了 maximumPoolSize，显然创建新 Worker 失败，线程池执行预设的拒绝策略，否则该 Task 作为新 Worker 的 firstTask 执行。</p><p>与这个机制相关的代码如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>execute</span>(Runnable command) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (command <span style=color:#f92672>==</span> <span style=color:#66d9ef>null</span>)
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> NullPointerException();
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>int</span> c <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// Worker 数量 &lt; corePoolSize，增加 Worker 来执行 command</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (workerCountOf(c) <span style=color:#f92672>&lt;</span> corePoolSize) {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (addWorker(command, <span style=color:#66d9ef>true</span>))
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span>;
+</span></span><span style=display:flex><span>        c <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// Worker 数量超过 corePoolSize，那么就先入队</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (isRunning(c) <span style=color:#f92672>&amp;&amp;</span> workQueue.<span style=color:#a6e22e>offer</span>(command)) {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> recheck <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (<span style=color:#f92672>!</span>isRunning(recheck) <span style=color:#f92672>&amp;&amp;</span> remove(command))
+</span></span><span style=display:flex><span>            reject(command);
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>else</span> <span style=color:#66d9ef>if</span> (workerCountOf(recheck) <span style=color:#f92672>==</span> 0)
+</span></span><span style=display:flex><span>            addWorker(<span style=color:#66d9ef>null</span>, <span style=color:#66d9ef>false</span>);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 队列满，就增加 Worker 来执行 command</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>else</span> <span style=color:#66d9ef>if</span> (<span style=color:#f92672>!</span>addWorker(command, <span style=color:#66d9ef>false</span>))
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 增加 Worker 失败，就要调用拒绝策略了</span>
+</span></span><span style=display:flex><span>        reject(command);
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>当然，这只是一个粗略的线程池运行机制，更多细节的内容，接着往下看。</p><h2 id=谁在执行任务>谁在执行任务</h2><p>经过我们上面的一段描述，一个关键的角色我想你应该注意到了，那就是 Worker。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>Worker</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>extends</span> AbstractQueuedSynchronizer
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>implements</span> Runnable
+</span></span><span style=display:flex><span>{
+</span></span><span style=display:flex><span>    <span style=color:#75715e>/**
+</span></span></span><span style=display:flex><span><span style=color:#75715e>     * This class will never be serialized, but we provide a
+</span></span></span><span style=display:flex><span><span style=color:#75715e>     * serialVersionUID to suppress a javac warning.
+</span></span></span><span style=display:flex><span><span style=color:#75715e>     */</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>long</span> serialVersionUID <span style=color:#f92672>=</span> 6138294804551838833L;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>/** Thread this worker is running in.  Null if factory fails. */</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>final</span> Thread thread;
+</span></span><span style=display:flex><span>    <span style=color:#75715e>/** Initial task to run.  Possibly null. */</span>
+</span></span><span style=display:flex><span>    Runnable firstTask;
+</span></span><span style=display:flex><span>    <span style=color:#75715e>/** Per-thread task counter */</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>volatile</span> <span style=color:#66d9ef>long</span> completedTasks;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>/**
+</span></span></span><span style=display:flex><span><span style=color:#75715e>     * Creates with given first task and thread from ThreadFactory.
+</span></span></span><span style=display:flex><span><span style=color:#75715e>     * @param firstTask the first task (null if none)
+</span></span></span><span style=display:flex><span><span style=color:#75715e>     */</span>
+</span></span><span style=display:flex><span>    Worker(Runnable firstTask) {
+</span></span><span style=display:flex><span>        setState(<span style=color:#f92672>-</span>1); <span style=color:#75715e>// inhibit interrupts until runWorker</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>firstTask</span> <span style=color:#f92672>=</span> firstTask;
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 这里你可以看到，将当前 Worker 对象作为 Runnable</span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 所以，后续线程启动之后，就会执行 Worker 的 run 方法</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>thread</span> <span style=color:#f92672>=</span> getThreadFactory().<span style=color:#a6e22e>newThread</span>(<span style=color:#66d9ef>this</span>);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>/** Delegates main run loop to outer runWorker  */</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>run</span>() {
+</span></span><span style=display:flex><span>        runWorker(<span style=color:#66d9ef>this</span>);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// Lock methods</span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>//</span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// The value 0 represents the unlocked state.</span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// The value 1 represents the locked state.</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>protected</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>isHeldExclusively</span>() { <span style=color:#66d9ef>return</span> getState() <span style=color:#f92672>!=</span> 0; }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>protected</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>tryAcquire</span>(<span style=color:#66d9ef>int</span> unused) {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (compareAndSetState(0, 1)) {
+</span></span><span style=display:flex><span>            setExclusiveOwnerThread(Thread.<span style=color:#a6e22e>currentThread</span>());
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>protected</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>tryRelease</span>(<span style=color:#66d9ef>int</span> unused) {
+</span></span><span style=display:flex><span>        setExclusiveOwnerThread(<span style=color:#66d9ef>null</span>);
+</span></span><span style=display:flex><span>        setState(0);
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>lock</span>()        { acquire(1); }
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>tryLock</span>()  { <span style=color:#66d9ef>return</span> tryAcquire(1); }
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>unlock</span>()      { release(1); }
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>isLocked</span>() { <span style=color:#66d9ef>return</span> isHeldExclusively(); }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>interruptIfStarted</span>() {
+</span></span><span style=display:flex><span>        Thread t;
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (getState() <span style=color:#f92672>&gt;=</span> 0 <span style=color:#f92672>&amp;&amp;</span> (t <span style=color:#f92672>=</span> thread) <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>t.<span style=color:#a6e22e>isInterrupted</span>()) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>try</span> { t.<span style=color:#a6e22e>interrupt</span>(); } <span style=color:#66d9ef>catch</span> (SecurityException ignore) {}
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>Worker 类是 ThreadPoolExecutor 的一个内部类，它实现了 Runnable 接口，所以本质上来说，它也是一个任务，只不过在这个任务里面要 <strong>不断执行用户提交的 Task</strong>。</p><p>并且，你要执行任务，至少应该有一个线程吧，所以在 Worker 中维护了实际执行任务的线程 thread。</p><p>最后，还有一个统计的变量 completedTasks，表示这个 Worker 执行的任务数量。</p><h3 id=怎么创建-worker>怎么创建 Worker</h3><p>要了解 Worker 是怎么创建的，我们要将目光聚焦到 addWorker 方法上。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>addWorker</span>(Runnable firstTask, <span style=color:#66d9ef>boolean</span> core) {
+</span></span><span style=display:flex><span>    retry:
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>for</span> (;;) {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> c <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> rs <span style=color:#f92672>=</span> runStateOf(c); <span style=color:#75715e>// 计算线程池运行状态</span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// Check if queue empty only if necessary.</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (rs <span style=color:#f92672>&gt;=</span> SHUTDOWN <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>(rs <span style=color:#f92672>==</span> SHUTDOWN <span style=color:#f92672>&amp;&amp;</span> firstTask <span style=color:#f92672>==</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>workQueue.<span style=color:#a6e22e>isEmpty</span>()))
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>for</span> (;;) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>int</span> wc <span style=color:#f92672>=</span> workerCountOf(c);
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (wc <span style=color:#f92672>&gt;=</span> CAPACITY <span style=color:#f92672>||</span> wc <span style=color:#f92672>&gt;=</span> (core <span style=color:#f92672>?</span> corePoolSize : maximumPoolSize))
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// 原子的将 workerCount+1 </span>
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// 如果出现并发，那么只会有一个线程原子成功，break 出去，其他失败的线程再次循环</span>
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (compareAndIncrementWorkerCount(c))
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>break</span> retry;
+</span></span><span style=display:flex><span>            c <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();  <span style=color:#75715e>// Re-read ctl</span>
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (runStateOf(c) <span style=color:#f92672>!=</span> rs)
+</span></span><span style=display:flex><span>                <span style=color:#75715e>// 这里线程池状态发生了改变，需要跳到最外层循环执行，重新获取线程池状态 rs</span>
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>continue</span> retry;
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// else CAS failed due to workerCount change; retry inner loop</span>
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>boolean</span> workerStarted <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>boolean</span> workerAdded <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>    Worker w <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        <span style=color:#75715e>/**
+</span></span></span><span style=display:flex><span><span style=color:#75715e>         * 这里就是在创建 Worker，并且将 firstTask 作为 Worker 的 firstTask
+</span></span></span><span style=display:flex><span><span style=color:#75715e>         * 从上面 Worker 类我们也看到，在 Worker 的构造方法中，主要做三件事：
+</span></span></span><span style=display:flex><span><span style=color:#75715e>         *  1. 设置 state 为 -1
+</span></span></span><span style=display:flex><span><span style=color:#75715e>         *  2. 将 firstTask 赋值给成员属性
+</span></span></span><span style=display:flex><span><span style=color:#75715e>         *  3. 从 ThreadFactory 创建一个新线程，赋值给成员属性
+</span></span></span><span style=display:flex><span><span style=color:#75715e>         */</span>
+</span></span><span style=display:flex><span>        w <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> Worker(firstTask);
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>final</span> Thread t <span style=color:#f92672>=</span> w.<span style=color:#a6e22e>thread</span>;
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (t <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>final</span> ReentrantLock mainLock <span style=color:#f92672>=</span> <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>mainLock</span>;
+</span></span><span style=display:flex><span>            mainLock.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>                <span style=color:#75715e>// Recheck while holding lock.</span>
+</span></span><span style=display:flex><span>                <span style=color:#75715e>// Back out on ThreadFactory failure or if shut down before lock acquired.</span>
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>int</span> rs <span style=color:#f92672>=</span> runStateOf(ctl.<span style=color:#a6e22e>get</span>());
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>if</span> (rs <span style=color:#f92672>&lt;</span> SHUTDOWN <span style=color:#f92672>||</span> (rs <span style=color:#f92672>==</span> SHUTDOWN <span style=color:#f92672>&amp;&amp;</span> firstTask <span style=color:#f92672>==</span> <span style=color:#66d9ef>null</span>)) {
+</span></span><span style=display:flex><span>                    <span style=color:#66d9ef>if</span> (t.<span style=color:#a6e22e>isAlive</span>()) <span style=color:#75715e>// precheck that t is startable</span>
+</span></span><span style=display:flex><span>                        <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> IllegalThreadStateException(); 
+</span></span><span style=display:flex><span>                    <span style=color:#75715e>// 将 worker 添加到 workers（HashSet） 中 </span>
+</span></span><span style=display:flex><span>                    workers.<span style=color:#a6e22e>add</span>(w);
+</span></span><span style=display:flex><span>                    <span style=color:#75715e>// 主要是更新 largestPoolSize</span>
+</span></span><span style=display:flex><span>                    <span style=color:#66d9ef>int</span> s <span style=color:#f92672>=</span> workers.<span style=color:#a6e22e>size</span>();
+</span></span><span style=display:flex><span>                    <span style=color:#66d9ef>if</span> (s <span style=color:#f92672>&gt;</span> largestPoolSize)
+</span></span><span style=display:flex><span>                        largestPoolSize <span style=color:#f92672>=</span> s;
+</span></span><span style=display:flex><span>                    workerAdded <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>                }
+</span></span><span style=display:flex><span>            } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>                mainLock.<span style=color:#a6e22e>unlock</span>();
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (workerAdded) {
+</span></span><span style=display:flex><span>                <span style=color:#75715e>// 这里启动 Worker 内部的线程</span>
+</span></span><span style=display:flex><span>                t.<span style=color:#a6e22e>start</span>();
+</span></span><span style=display:flex><span>                workerStarted <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (<span style=color:#f92672>!</span>workerStarted)
+</span></span><span style=display:flex><span>            <span style=color:#75715e>/**
+</span></span></span><span style=display:flex><span><span style=color:#75715e>             * 如果添加 Worker 失败，就会进入下面的方法，主要做下面几件事：
+</span></span></span><span style=display:flex><span><span style=color:#75715e>             *  1. 将创建的 Worker 从 workers 中移除
+</span></span></span><span style=display:flex><span><span style=color:#75715e>             *  2. 将 Worker 的数量减一
+</span></span></span><span style=display:flex><span><span style=color:#75715e>             *  3. 尝试终止线程池，即调用 tryTerminate
+</span></span></span><span style=display:flex><span><span style=color:#75715e>             */</span>
+</span></span><span style=display:flex><span>            addWorkerFailed(w);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>return</span> workerStarted;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>从代码里面，我们发现有三处与 SHUTDOWN 比较大小的地方，这是什么意思？</p><p>首先 SHUTDOWN 是线程池的一个状态，实际值为 0，其余状态如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#75715e>// runState is stored in the high-order bits</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>int</span> RUNNING    <span style=color:#f92672>=</span> <span style=color:#f92672>-</span>1 <span style=color:#f92672>&lt;&lt;</span> COUNT_BITS; <span style=color:#75715e>// 接受新的任务并且处理等待队列中的任务。</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>int</span> SHUTDOWN   <span style=color:#f92672>=</span>  0 <span style=color:#f92672>&lt;&lt;</span> COUNT_BITS; <span style=color:#75715e>// 不接受新的任务，但是会处理已经提交的任务（包括队列中的任务）。</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>int</span> STOP       <span style=color:#f92672>=</span>  1 <span style=color:#f92672>&lt;&lt;</span> COUNT_BITS; <span style=color:#75715e>// 不接受新的任务，不再处理等待队列中的任务，并且会中断正在执行的任务。</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>int</span> TIDYING    <span style=color:#f92672>=</span>  2 <span style=color:#f92672>&lt;&lt;</span> COUNT_BITS; <span style=color:#75715e>// 所有的任务都已终止，workerCount 为0，线程池即将进入终态。</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>int</span> TERMINATED <span style=color:#f92672>=</span>  3 <span style=color:#f92672>&lt;&lt;</span> COUNT_BITS; <span style=color:#75715e>// 线程池已经完成了终止过程。</span>
+</span></span></code></pre></div><p>有了这个概念，我们再来分析下面的代码：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>if</span> (rs <span style=color:#f92672>&gt;=</span> SHUTDOWN <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>(rs <span style=color:#f92672>==</span> SHUTDOWN <span style=color:#f92672>&amp;&amp;</span> firstTask <span style=color:#f92672>==</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>workQueue.<span style=color:#a6e22e>isEmpty</span>()))
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>false</span>;
+</span></span></code></pre></div><p>如果 if 条件为 true，那么就不能创建新的 Worker，这点是明确的，这行代码其实是很绕的，我们不妨用逆向的思维来思考，什么情况下 if 条件为 false，这样就有可能继续添加 Worker 了。</p><p>我们将 if 条件取反：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>if</span> (rs <span style=color:#f92672>&lt;</span> SHUTDOWN <span style=color:#f92672>||</span> (rs <span style=color:#f92672>==</span> SHUTDOWN <span style=color:#f92672>&amp;&amp;</span> firstTask <span style=color:#f92672>==</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>workQueue.<span style=color:#a6e22e>isEmpty</span>())) {
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 允许添加 Worker 的逻辑</span>
+</span></span><span style=display:flex><span>} <span style=color:#66d9ef>else</span> {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>那这样就很明确了，即：只有当线程池处于正常运行状态，或者它正在被关闭（SHUTDOWN），但仍有一些任务在队列中未执行，并且添加的 Worker 是一个没有初始任务的 Worker，才允许添加新的 Worker。</p><p>而 addWorker 方法的第二个参数 core 其实就决定了当前创建 Worker 数量的上限，如果调用方传 true，那么只能创建 corePoolSize 个 Worker，否则可以创建 maximumPoolSize 个 Worker。</p><p>从这里我们就可以假想出，当阻塞队列满了之后，传入的 core 就为 false，否则就是 true。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>if</span> (wc <span style=color:#f92672>&gt;=</span> CAPACITY <span style=color:#f92672>||</span> wc <span style=color:#f92672>&gt;=</span> (core <span style=color:#f92672>?</span> corePoolSize : maximumPoolSize))
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>false</span>;
+</span></span></code></pre></div><p>当 Worker 成功被添加后，就要启动 Worker 内部的 thread，即调用 t.start() 方法。</p><h3 id=线程启动后跑什么代码>线程启动后跑什么代码</h3><p>当调用 t.start() 之后，必然就要开始执行 run 方法了，那执行哪个 Runnable 类的 run 方法呢？</p><p>其实在前面你应该注意到 Worker 类的构造方法了：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span>Worker(Runnable firstTask) {
+</span></span><span style=display:flex><span>    setState(<span style=color:#f92672>-</span>1); <span style=color:#75715e>// inhibit interrupts until runWorker</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>firstTask</span> <span style=color:#f92672>=</span> firstTask;
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 这里你可以看到，将当前 Worker 对象作为 Runnable</span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 所以，后续线程启动之后，就会执行 Worker 的 run 方法</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>thread</span> <span style=color:#f92672>=</span> getThreadFactory().<span style=color:#a6e22e>newThread</span>(<span style=color:#66d9ef>this</span>);
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>所以，我们接下来聚焦在 Worker 类的 run 方法中：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>run</span>() {
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 委托外部类的方法</span>
+</span></span><span style=display:flex><span>    runWorker(<span style=color:#66d9ef>this</span>);
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>final</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>runWorker</span>(Worker w) {
+</span></span><span style=display:flex><span>    Thread wt <span style=color:#f92672>=</span> Thread.<span style=color:#a6e22e>currentThread</span>();
+</span></span><span style=display:flex><span>    Runnable task <span style=color:#f92672>=</span> w.<span style=color:#a6e22e>firstTask</span>;
+</span></span><span style=display:flex><span>    w.<span style=color:#a6e22e>firstTask</span> <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>    w.<span style=color:#a6e22e>unlock</span>(); <span style=color:#75715e>// allow interrupts</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>boolean</span> completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 这个 getTask() 就是从队列里面拿任务，如果能成功拿到，就会一直执行下去</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>while</span> (task <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>||</span> (task <span style=color:#f92672>=</span> getTask()) <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) {
+</span></span><span style=display:flex><span>            w.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// If pool is stopping, ensure thread is interrupted;</span>
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// if not, ensure thread is not interrupted.  This</span>
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// requires a recheck in second case to deal with</span>
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// shutdownNow race while clearing interrupt</span>
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> ((runStateAtLeast(ctl.<span style=color:#a6e22e>get</span>(), STOP) <span style=color:#f92672>||</span> (Thread.<span style=color:#a6e22e>interrupted</span>() <span style=color:#f92672>&amp;&amp;</span> runStateAtLeast(ctl.<span style=color:#a6e22e>get</span>(), STOP))) <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>wt.<span style=color:#a6e22e>isInterrupted</span>())
+</span></span><span style=display:flex><span>                wt.<span style=color:#a6e22e>interrupt</span>();
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>                beforeExecute(wt, task); <span style=color:#75715e>// 扩展钩子</span>
+</span></span><span style=display:flex><span>                Throwable thrown <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>                    task.<span style=color:#a6e22e>run</span>(); <span style=color:#75715e>// 这里就是真正在执行任务了</span>
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>catch</span> (RuntimeException x) {
+</span></span><span style=display:flex><span>                    thrown <span style=color:#f92672>=</span> x; <span style=color:#66d9ef>throw</span> x;
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>catch</span> (Error x) {
+</span></span><span style=display:flex><span>                    thrown <span style=color:#f92672>=</span> x; <span style=color:#66d9ef>throw</span> x;
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>catch</span> (Throwable x) {
+</span></span><span style=display:flex><span>                    thrown <span style=color:#f92672>=</span> x; <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> Error(x);
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>                    <span style=color:#75715e>// 扩展钩子</span>
+</span></span><span style=display:flex><span>                    afterExecute(task, thrown);
+</span></span><span style=display:flex><span>                }
+</span></span><span style=display:flex><span>            } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>                task <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>                w.<span style=color:#a6e22e>completedTasks</span><span style=color:#f92672>++</span>;
+</span></span><span style=display:flex><span>                w.<span style=color:#a6e22e>unlock</span>();
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>        processWorkerExit(w, completedAbruptly);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在什么情况下会退出 while 循环呢？主要关注 getTask() 方法。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>private</span> Runnable <span style=color:#a6e22e>getTask</span>() {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>boolean</span> timedOut <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>; <span style=color:#75715e>// Did the last poll() time out?</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>for</span> (;;) {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> c <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> rs <span style=color:#f92672>=</span> runStateOf(c);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// Check if queue empty only if necessary.</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (rs <span style=color:#f92672>&gt;=</span> SHUTDOWN <span style=color:#f92672>&amp;&amp;</span> (rs <span style=color:#f92672>&gt;=</span> STOP <span style=color:#f92672>||</span> workQueue.<span style=color:#a6e22e>isEmpty</span>())) {
+</span></span><span style=display:flex><span>            decrementWorkerCount();
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> wc <span style=color:#f92672>=</span> workerCountOf(c);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// Are workers subject to culling?</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>boolean</span> timed <span style=color:#f92672>=</span> allowCoreThreadTimeOut <span style=color:#f92672>||</span> wc <span style=color:#f92672>&gt;</span> corePoolSize;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> ((wc <span style=color:#f92672>&gt;</span> maximumPoolSize <span style=color:#f92672>||</span> (timed <span style=color:#f92672>&amp;&amp;</span> timedOut)) <span style=color:#f92672>&amp;&amp;</span> (wc <span style=color:#f92672>&gt;</span> 1 <span style=color:#f92672>||</span> workQueue.<span style=color:#a6e22e>isEmpty</span>())) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (compareAndDecrementWorkerCount(c))
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>continue</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>            Runnable r <span style=color:#f92672>=</span> timed <span style=color:#f92672>?</span>
+</span></span><span style=display:flex><span>                workQueue.<span style=color:#a6e22e>poll</span>(keepAliveTime, TimeUnit.<span style=color:#a6e22e>NANOSECONDS</span>) : workQueue.<span style=color:#a6e22e>take</span>();
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// 如果拿到任务了，就直接返回就行了，在 runWorker 那里又会进入 while 循环执行任务</span>
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (r <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>)
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>return</span> r;
+</span></span><span style=display:flex><span>            timedOut <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>        } <span style=color:#66d9ef>catch</span> (InterruptedException retry) {
+</span></span><span style=display:flex><span>            timedOut <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这里有两段逻辑是比较关键的，我们详细看看。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>    Runnable r <span style=color:#f92672>=</span> timed <span style=color:#f92672>?</span>
+</span></span><span style=display:flex><span>        workQueue.<span style=color:#a6e22e>poll</span>(keepAliveTime, TimeUnit.<span style=color:#a6e22e>NANOSECONDS</span>) : workQueue.<span style=color:#a6e22e>take</span>();
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 如果拿到任务了，就直接返回就行了，在 runWorker 那里又会进入 while 循环执行任务</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (r <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>)
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>return</span> r;
+</span></span><span style=display:flex><span>    timedOut <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>} <span style=color:#66d9ef>catch</span> (InterruptedException retry) {
+</span></span><span style=display:flex><span>    timedOut <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>就阻塞队列来说，poll 和 take 的区别是什么？</p><ul><li>无参的 poll 会立即返回，不会阻塞，而这里带参数的 poll 表示只会阻塞 keepAliveTime 纳秒。</li><li>而 take 会一直阻塞，直到有返回结果。</li></ul><p>而具体选择 poll 还是 take 呢？取决于 timed，这个 timed 是什么？</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>boolean</span> timed <span style=color:#f92672>=</span> allowCoreThreadTimeOut <span style=color:#f92672>||</span> wc <span style=color:#f92672>&gt;</span> corePoolSize;
+</span></span></code></pre></div><p>当 allowCoreThreadTimeOut 参数为 true 或者 Worker 数量已经超过 corePoolSize，那么 timed 为 true。</p><p>所以，allowCoreThreadTimeOut 参数的含义，以及为什么超出 corePoolSize 数量的线程在超过 keepAliveTime 后会被“回收”我想你应该懂了。</p><p>那这个 timedOut 是干啥的？就和下面这段逻辑相关了：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>if</span> ((wc <span style=color:#f92672>&gt;</span> maximumPoolSize <span style=color:#f92672>||</span> (timed <span style=color:#f92672>&amp;&amp;</span> timedOut)) <span style=color:#f92672>&amp;&amp;</span> (wc <span style=color:#f92672>&gt;</span> 1 <span style=color:#f92672>||</span> workQueue.<span style=color:#a6e22e>isEmpty</span>())) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (compareAndDecrementWorkerCount(c))
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>continue</span>;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>首先 timedOut 为 true 仅当 timed 为 true，并且等待了 keepAliveTime 纳秒，并且没有拿到任务。</p><p>那么这种情况下，如果 timed 还是为 true，说明 Worker 数量是可以减少了，于是就有了上面的代码。</p><p>那么总的来说，getTask() 方法会返回一个 Runnable 对象或者一个 null 值，如果返回 null 值表示这个线程可以被“回收”了，否则就继续执行返回的 Runnable 任务。</p><p>我们再回到 runWorker 方法中，这里面，还有一个比较关键的变量 completedAbruptly，从代码结构可以看出来，如果线程从队列中没有拿到任务，就会正常退出 while 循环，自然 completedAbruptly 为 false，而一旦线程执行任务出现异常，就会跳过 completedAbruptly 的赋值，直接执行 finally 块的 processWorkerExit()。</p><p>所以，你需要记住，<strong>completedAbruptly 为 true 表示线程执行出现异常了，为 false 就表示线程没有拿到任务，可以被“回收”了。</strong></p><p>带着这个理解，再来看 processWorkerExit 是怎么对线程进行善后的？</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>processWorkerExit</span>(Worker w, <span style=color:#66d9ef>boolean</span> completedAbruptly) {
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 线程执行出现异常，Worker 数量要减一</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (completedAbruptly) <span style=color:#75715e>// If abrupt, then workerCount wasn&#39;t adjusted</span>
+</span></span><span style=display:flex><span>        decrementWorkerCount();
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>final</span> ReentrantLock mainLock <span style=color:#f92672>=</span> <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>mainLock</span>;
+</span></span><span style=display:flex><span>    mainLock.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        completedTaskCount <span style=color:#f92672>+=</span> w.<span style=color:#a6e22e>completedTasks</span>;
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 所以，一旦进入这个方法，那么 Worker 一定是会被移除的</span>
+</span></span><span style=display:flex><span>        workers.<span style=color:#a6e22e>remove</span>(w);
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>        mainLock.<span style=color:#a6e22e>unlock</span>();
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    tryTerminate();
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>int</span> c <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (runStateLessThan(c, STOP)) {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (<span style=color:#f92672>!</span>completedAbruptly) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>int</span> min <span style=color:#f92672>=</span> allowCoreThreadTimeOut <span style=color:#f92672>?</span> 0 : corePoolSize;
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (min <span style=color:#f92672>==</span> 0 <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>workQueue.<span style=color:#a6e22e>isEmpty</span>())
+</span></span><span style=display:flex><span>                min <span style=color:#f92672>=</span> 1;
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (workerCountOf(c) <span style=color:#f92672>&gt;=</span> min)
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>return</span>; <span style=color:#75715e>// replacement not needed</span>
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        addWorker(<span style=color:#66d9ef>null</span>, <span style=color:#66d9ef>false</span>);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>比较关键的逻辑是下面的代码，认真理解一下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#75715e>// 如果线程池还在运行中</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>if</span> (runStateLessThan(c, STOP)) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (<span style=color:#f92672>!</span>completedAbruptly) {
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 如果线程是正常退出，是从阻塞队列中没有拿到任务，而不是执行异常</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> min <span style=color:#f92672>=</span> allowCoreThreadTimeOut <span style=color:#f92672>?</span> 0 : corePoolSize;
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (min <span style=color:#f92672>==</span> 0 <span style=color:#f92672>&amp;&amp;</span> <span style=color:#f92672>!</span>workQueue.<span style=color:#a6e22e>isEmpty</span>())
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// 如果队列不为空，那么至少保留一个线程</span>
+</span></span><span style=display:flex><span>            min <span style=color:#f92672>=</span> 1;
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (workerCountOf(c) <span style=color:#f92672>&gt;=</span> min)
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span>; <span style=color:#75715e>// replacement not needed</span>
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 添加一个新的 Worker，它没有 firstTask，只能从队列中拿任务</span>
+</span></span><span style=display:flex><span>    addWorker(<span style=color:#66d9ef>null</span>, <span style=color:#66d9ef>false</span>);
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>不难看出，这个 min 变量就表示这个线程池里面至少需要滞留的 Worker 数量，如果此时 Worker 的数量 ≥ min，那么直接返回，那么对应的 Worker 的 run 方法就执行完了，这个线程就被“回收”了。</p><p>而最后一行的 addWorker 相当于就是在增加一个 Worker 来替换当前必定“回收”的 Worker，那什么情况下需要新增 Worker 替换呢？有两个原因：一是 Worker 数量没有达到 min，二是线程执行出现异常。</p><p>最后在总结一下 allowCoreThreadTimeOut 和 keepAliveTime 参数的作用：</p><p>这两个参数是用于控制线程池中空闲线程生命周期的重要参数，它们共同决定了线程池如何管理线程的存活时间。</p><p>首先 keepAliveTime 默认情况下，控制了当线程池中的线程数量超出了 corePoolSize 时线程的最大空闲时间，这种情况下的 allowCoreThreadTimeOut 默认为 false，而如果 allowCoreThreadTimeOut 为 true，那么 keepAliveTime 就控制了当线程池中的线程数量大于 0 时线程的最大空闲时间。</p><p>而这种实现机制本质就是通过从阻塞队列 poll 任务时指定超时时间，如果在超时时间之后还没有拿到新任务，那么线程就结束 run 方法，愉快的走向消亡了。</p><h3 id=为什么要继承-aqs>为什么要继承 AQS</h3><p>当然，在 Worker 类的继承体系上还有一个关键点：它继承了 AQS，我们知道 AQS 是用于实现同步器的，那 Worker 继承 AQS 有什么用呢？</p><p>我们先看看哪些地方用到了 lock 和 tryLock 方法。</p><p>对于 lock 方法，其实只在 runWorker 方法中用到了，对于 runWorker 这个方法，想必应该不陌生了，</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>final</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>runWorker</span>(Worker w) {
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>    w.<span style=color:#a6e22e>unlock</span>(); <span style=color:#75715e>// allow interrupts</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>boolean</span> completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>while</span> (task <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>||</span> (task <span style=color:#f92672>=</span> getTask()) <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) {
+</span></span><span style=display:flex><span>            w.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// 执行 Task</span>
+</span></span><span style=display:flex><span>            } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>                <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>                w.<span style=color:#a6e22e>unlock</span>();
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> { processWorkerExit(w, completedAbruptly); }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>所以 Worker 在执行任务会加锁，执行完毕之后就会释放。</p><p>而 tryLock 方法也只有一个地方使用到了，那就是 interruptIdleWorkers() 方法：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>interruptIdleWorkers</span>(<span style=color:#66d9ef>boolean</span> onlyOne) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>final</span> ReentrantLock mainLock <span style=color:#f92672>=</span> <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>mainLock</span>;
+</span></span><span style=display:flex><span>    mainLock.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>for</span> (Worker w : workers) {
+</span></span><span style=display:flex><span>            Thread t <span style=color:#f92672>=</span> w.<span style=color:#a6e22e>thread</span>;
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// w.tryLock()</span>
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (<span style=color:#f92672>!</span>t.<span style=color:#a6e22e>isInterrupted</span>() <span style=color:#f92672>&amp;&amp;</span> w.<span style=color:#a6e22e>tryLock</span>()) {
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>                    t.<span style=color:#a6e22e>interrupt</span>();
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>catch</span> (SecurityException ignore) {
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>finally</span> { w.<span style=color:#a6e22e>unlock</span>(); }
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (onlyOne) <span style=color:#66d9ef>break</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> { mainLock.<span style=color:#a6e22e>unlock</span>(); }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>从这个方法名称，应该可以看出，这是在中断 Idle 的 Worker，Idle 的意思是“闲置的”，那么对 Worker 而言，其实就是阻塞在 poll 或者 take 上的线程，我想你应该还记得下面的代码：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span>Runnable r <span style=color:#f92672>=</span> timed <span style=color:#f92672>?</span>
+</span></span><span style=display:flex><span>    workQueue.<span style=color:#a6e22e>poll</span>(keepAliveTime, TimeUnit.<span style=color:#a6e22e>NANOSECONDS</span>) : workQueue.<span style=color:#a6e22e>take</span>();
+</span></span></code></pre></div><p>那怎么才能知道哪些 Worker 正在阻塞呢？这就是 Worker 继承 AQS 的作用了，当 Worker 执行任务的时候会获取锁，而在 interruptIdleWorkers 方法中，需要通过 tryLock 拿到锁才能打断，如果一个 Worker 正在执行任务，那么注定 tryLock 会失败，自然就不会中断它，而如果一个 Worker 正在阻塞时，它肯定没有进行 lock，那么此时 tryLock 是可以成功的，继而就可以打断它。</p><p>所以，总结一句话，Worker 继承 AQS 的作用就是 <strong>保证执行任务的线程不会被中断</strong>。</p><p>事实真的是如此吗？我们再来看看 Lea 老头是怎么解释的。</p><p>下面是 Worker 类 doc 注释的几句比较核心的解释：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-plain data-lang=plain><span style=display:flex><span>Class Worker mainly maintains interrupt control state for threads running tasks.
+</span></span></code></pre></div><p>Worker 类主要是维护那些正在执行任务的线程的中断状态。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-plain data-lang=plain><span style=display:flex><span>This protects against interrupts that are intended to wake up a worker thread waiting for a task from instead interrupting a task being run.
+</span></span></code></pre></div><p>这（Worker 继承 AQS）可以防止原本用于唤醒正在等待任务的 Worker 的中断，意外中断了正在执行任务的 Worker。</p><p>有点绕，注意理解，第一个中断是名词，第二个是动词。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-plain data-lang=plain><span style=display:flex><span>We implement a simple non-reentrant mutual exclusion lock rather than use ReentrantLock because we do not want worker tasks to be able to reacquire the lock when they invoke pool control methods like setCorePoolSize.
+</span></span></code></pre></div><p>这段话解释了 Lea 老头为什么要自己搞一个 AQS，而不是使用现成的 ReentrantLock。</p><p>我们实现了一个简单的不可重入的排他锁，而不是使用 ReentrantLock，这是因为我们不希望 Worker 在执行任务时再调用像 setCorePoolSize 这样的线程池控制方法时能够重新获取锁。</p><p>这段话是什么意思？先看 setCorePoolSize 方法：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>setCorePoolSize</span>(<span style=color:#66d9ef>int</span> corePoolSize) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (corePoolSize <span style=color:#f92672>&lt;</span> 0)
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> IllegalArgumentException();
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>int</span> delta <span style=color:#f92672>=</span> corePoolSize <span style=color:#f92672>-</span> <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>corePoolSize</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>corePoolSize</span> <span style=color:#f92672>=</span> corePoolSize;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (workerCountOf(ctl.<span style=color:#a6e22e>get</span>()) <span style=color:#f92672>&gt;</span> corePoolSize)
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 如果 Worker 数量大于 corePoolSize，那么就要打断 Idle Worker</span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// 那些 Worker 被打断之后，没有从队列中拿到任务，而此时又更新了 corePoolSize，所以它们就可能被“回收”了</span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// interruptIdleWorkers 内部会通过 tryLock 拿锁</span>
+</span></span><span style=display:flex><span>        interruptIdleWorkers();
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>else</span> <span style=color:#66d9ef>if</span> (delta <span style=color:#f92672>&gt;</span> 0) {
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// We don&#39;t really know how many new threads are &#34;needed&#34;.</span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// As a heuristic, prestart enough new workers (up to new</span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// core size) to handle the current number of tasks in</span>
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// queue, but stop if queue becomes empty while doing so.</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>int</span> k <span style=color:#f92672>=</span> Math.<span style=color:#a6e22e>min</span>(delta, workQueue.<span style=color:#a6e22e>size</span>());
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>while</span> (k<span style=color:#f92672>--</span> <span style=color:#f92672>&gt;</span> 0 <span style=color:#f92672>&amp;&amp;</span> addWorker(<span style=color:#66d9ef>null</span>, <span style=color:#66d9ef>true</span>)) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (workQueue.<span style=color:#a6e22e>isEmpty</span>())
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>break</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>如果使用 ReentrantLock，那么假设线程执行的任务是这样的：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span>ThreadPoolExecutor executor <span style=color:#f92672>=</span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>new</span> ThreadPoolExecutor(4, 4, 0L, TimeUnit.<span style=color:#a6e22e>MILLISECONDS</span>, <span style=color:#66d9ef>new</span> ArrayBlockingQueue<span style=color:#f92672>&lt;&gt;</span>(10));
+</span></span><span style=display:flex><span>executor.<span style=color:#a6e22e>execute</span>(() <span style=color:#f92672>-&gt;</span> executor.<span style=color:#a6e22e>setCorePoolSize</span>(2));
+</span></span></code></pre></div><p>本来线程在执行任务，那么一定已经 lock 加锁了，而任务内调用 setCorePoolSize 又会调用 tryLock，锁又是可重入的，那不就把这个正在执行任务的线程中断了。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-plain data-lang=plain><span style=display:flex><span>Additionally, to suppress interrupts until the thread actually starts running tasks, we initialize lock state to a negative value, and clear it upon start (in runWorker).
+</span></span></code></pre></div><p>最后一句，就是说，为了 <strong>抑制中断直到线程真正开始执行任务</strong>，我们初始化锁状态为负数（-1），并在启动时（runWorker 中）清除它。</p><p>所以在 Worker 类的构造方法中，如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span>Worker(Runnable firstTask) {
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 初始化锁状态为 -1</span>
+</span></span><span style=display:flex><span>    setState(<span style=color:#f92672>-</span>1); <span style=color:#75715e>// inhibit interrupts until runWorker</span>
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>而在 runWorker 类，会看到这段代码：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>final</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>runWorker</span>(Worker w) {
+</span></span><span style=display:flex><span>    Thread wt <span style=color:#f92672>=</span> Thread.<span style=color:#a6e22e>currentThread</span>();
+</span></span><span style=display:flex><span>    Runnable task <span style=color:#f92672>=</span> w.<span style=color:#a6e22e>firstTask</span>;
+</span></span><span style=display:flex><span>    w.<span style=color:#a6e22e>firstTask</span> <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// 并在启动时清除它</span>
+</span></span><span style=display:flex><span>    w.<span style=color:#a6e22e>unlock</span>(); <span style=color:#75715e>// allow interrupts</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>boolean</span> completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>while</span> (task <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>||</span> (task <span style=color:#f92672>=</span> getTask()) <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) {
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> { processWorkerExit(w, completedAbruptly); }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>最后，这句话如何理解？<strong>抑制中断直到线程真正开始执行任务</strong>。</p><p>在 Worker 类中，locked 状态的 state 值为 1，unlocked 状态的 state 值为 0，所以显然，tryLock 方法会 cas 将 state 从 0 改为 1。</p><p>那 state 为 -1，是不是说明 tryLock 一定会失败，那么就不会中断这个 Worker，这下应该理解了吧。</p><h2 id=另一把锁-mainlock>另一把锁 mainLock</h2><p>前面，我们知道 Worker 类继承了 AQS，所以我们也可以将 Worker 理解为一把锁，而在 ThreadPoolExecutor 中还有另一把锁 mainLock。</p><p><img src=assets/6372407a78f6b4b2c1254f10aa3ee089.png alt class=rounded-shadow-image loading=lazy></p><p>从图中，我们看出，这把锁是一个 ReentrantLock，在 ThreadPoolExecutor 类中，像 workers、largestPoolSize、completedTaskCount 等都需要先持有 mainLock 才能访问。</p><p>我们以 workers 为例，分析一下。</p><p>首先，这个 workers 是一个 HashSet，存储了线程池中所有的 Worker，我们都知道 HashSet 是线程不安全的，所以需要锁来保证线程安全，但是你会不会有一个疑问，为什么不用一个线程安全的 Set 集合，比如 ConcurrentSkipListSet，而要用锁。</p><p>其实，这个问题 Lea 老头早就给你想好了，来看 mainLock 的 doc 注释：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-plain data-lang=plain><span style=display:flex><span>While we could use a concurrent set of some sort, it turns out to be generally preferable to use a lock.
+</span></span></code></pre></div><p>我们当然可以使用并发安全的 Set 集合，但事实证明，使用 lock 是更合适的。</p><p>接下来就是解释为什么使用 lock 更合适了。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-plain data-lang=plain><span style=display:flex><span>Among the reasons is that this serializes interruptIdleWorkers, which avoids unnecessary interrupt storms, especially during shutdown. Otherwise exiting threads would concurrently interrupt those that have not yet interrupted.
+</span></span><span style=display:flex><span>It also simplifies some of the associated statistics bookkeeping of largestPoolSize etc.
+</span></span><span style=display:flex><span>We also hold mainLock on shutdown and shutdownNow, for the sake of ensuring workers set is stable while separately checking permission to interrupt and actually interrupting.
+</span></span></code></pre></div><p>其中一个原因是它使 interruptIdleWorkers 方法串行执行，从而避免了不必要的“中断风暴”，特别是在 shutdown 时，否则，退出的线程会并发的中断那些尚未中断的线程。</p><p>这也简化了一些变量比如 largestPoolSize 等的统计维护工作。</p><p>在执行 shutdown 和 shutdownNow 时，我们也会持有 mainLock，用于确保在单独检查中断权限以及实际执行中断过程中，workers 集合的稳定性。</p><p>这里面比较难理解的是这个“中断风暴”的概念。</p><p>假设我们使用的是并发安全的 Set 集合，这时候有多个线程并发的执行 shutdown 方法，由于没有 mainLock，所以不存在阻塞，每个线程都会执行 interruptIdleWorkers 方法。</p><p>这会出现什么情况呢？假设线程池中有一个阻塞的线程 t，那么此时一个线程来对这个 t 发起了中断，此时 t 正在中断中，又来了一个线程对这个 t 发起了中断，这就出现了对正在中断的线程又发起了中断。</p><p>而执行 shutdown 方法的并发线程越多，就越有可能出现这种对正在中断的线程又发起了中断的情况，这就是所谓的“中断风暴”。</p><p>其他的倒没有什么说的，额外注意一点的就是，我们应该学习 Lea 老头的加、解锁的规范，比如下面一段代码：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>final</span> ReentrantLock mainLock <span style=color:#f92672>=</span> <span style=color:#66d9ef>this</span>.<span style=color:#a6e22e>mainLock</span>;
+</span></span><span style=display:flex><span>mainLock.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span><span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>} <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>    mainLock.<span style=color:#a6e22e>unlock</span>();
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>相信大家一定知道 unlock 要写在 finally 块内，但是 lock 为什么要写在 try 上面呢？</p><p>假设在 lock 加锁时出现异常，那么进入 finally 解锁，此时 Thread.currentThread() 一定不是持锁线程，所以会抛出 IllegalMonitorStateException 异常。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#75715e>// java.util.concurrent.locks.ReentrantLock.Sync#tryRelease</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>protected</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>tryRelease</span>(<span style=color:#66d9ef>int</span> releases) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>int</span> c <span style=color:#f92672>=</span> getState() <span style=color:#f92672>-</span> releases;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (Thread.<span style=color:#a6e22e>currentThread</span>() <span style=color:#f92672>!=</span> getExclusiveOwnerThread())
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> IllegalMonitorStateException();
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>当然，抛这个异常并不是最严重的问题，最严重的是会导致异常堆栈丢失，比如我通过重写 ReentrantLock 来模拟 lock 异常：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#f92672>import</span> java.util.concurrent.locks.AbstractQueuedSynchronizer;
+</span></span><span style=display:flex><span><span style=color:#f92672>import</span> java.util.concurrent.locks.Lock;
+</span></span><span style=display:flex><span><span style=color:#f92672>import</span> java.util.concurrent.locks.ReentrantLock;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>SupportedReentrantLock</span> <span style=color:#66d9ef>extends</span> ReentrantLock {
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>final</span> NonfairSync sync <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> NonfairSync();
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>NonfairSync</span> <span style=color:#66d9ef>extends</span> AbstractQueuedSynchronizer {
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> <span style=color:#66d9ef>long</span> serialVersionUID <span style=color:#f92672>=</span> 7316153563782823691L;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>lock</span>() {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (<span style=color:#66d9ef>true</span>) {
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> RuntimeException(<span style=color:#e6db74>&#34;error!!!&#34;</span>);
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (compareAndSetState(0, 1))
+</span></span><span style=display:flex><span>                setExclusiveOwnerThread(Thread.<span style=color:#a6e22e>currentThread</span>());
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>else</span>
+</span></span><span style=display:flex><span>                acquire(1);
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>protected</span> <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>tryAcquire</span>(<span style=color:#66d9ef>int</span> acquires) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span> nonfairTryAcquire(acquires);
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>boolean</span> <span style=color:#a6e22e>nonfairTryAcquire</span>(<span style=color:#66d9ef>int</span> acquires) {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>final</span> Thread current <span style=color:#f92672>=</span> Thread.<span style=color:#a6e22e>currentThread</span>();
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>int</span> c <span style=color:#f92672>=</span> getState();
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (c <span style=color:#f92672>==</span> 0) {
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>if</span> (compareAndSetState(0, acquires)) {
+</span></span><span style=display:flex><span>                    setExclusiveOwnerThread(current);
+</span></span><span style=display:flex><span>                    <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>                }
+</span></span><span style=display:flex><span>            } <span style=color:#66d9ef>else</span> <span style=color:#66d9ef>if</span> (current <span style=color:#f92672>==</span> getExclusiveOwnerThread()) {
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>int</span> nextc <span style=color:#f92672>=</span> c <span style=color:#f92672>+</span> acquires;
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>if</span> (nextc <span style=color:#f92672>&lt;</span> 0) <span style=color:#75715e>// overflow</span>
+</span></span><span style=display:flex><span>                    <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> Error(<span style=color:#e6db74>&#34;Maximum lock count exceeded&#34;</span>);
+</span></span><span style=display:flex><span>                setState(nextc);
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#a6e22e>@Override</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>lock</span>() {
+</span></span><span style=display:flex><span>        sync.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>main</span>(String<span style=color:#f92672>[]</span> args) {
+</span></span><span style=display:flex><span>        Lock lock <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> SupportedReentrantLock();
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>            lock.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>            System.<span style=color:#a6e22e>out</span>.<span style=color:#a6e22e>println</span>(<span style=color:#e6db74>&#34;加锁了&#34;</span>);
+</span></span><span style=display:flex><span>        } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>            lock.<span style=color:#a6e22e>unlock</span>();
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>来看执行情况：</p><p><img src=assets/f13f38e1d288a9a63924ac715b014da1.png alt class=rounded-shadow-image loading=lazy></p><p>可以看到，异常堆栈已经丢了，当然，一般情况下是不会出现这种问题的，但毕竟这是一种 <strong>良好的编码规范</strong>。</p><h2 id=任务执行时抛异常>任务执行时抛异常</h2><p>在线程池中，所有的 Worker 都有条不紊的执行着任务，但是如果 Worker，或者说线程在执行任务时出现异常，会发生什么呢？</p><p>线程执行任务的关键还是在 runWorker 方法，再来看看这个方法：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>final</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>runWorker</span>(Worker w) {
+</span></span><span style=display:flex><span>    Thread wt <span style=color:#f92672>=</span> Thread.<span style=color:#a6e22e>currentThread</span>();
+</span></span><span style=display:flex><span>    Runnable task <span style=color:#f92672>=</span> w.<span style=color:#a6e22e>firstTask</span>;
+</span></span><span style=display:flex><span>    w.<span style=color:#a6e22e>firstTask</span> <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>    w.<span style=color:#a6e22e>unlock</span>(); <span style=color:#75715e>// allow interrupts</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>boolean</span> completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>while</span> (task <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>||</span> (task <span style=color:#f92672>=</span> getTask()) <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) {
+</span></span><span style=display:flex><span>            w.<span style=color:#a6e22e>lock</span>();
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>                beforeExecute(wt, task);
+</span></span><span style=display:flex><span>                Throwable thrown <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>                <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>                    task.<span style=color:#a6e22e>run</span>();
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>catch</span> (RuntimeException x) {
+</span></span><span style=display:flex><span>                    thrown <span style=color:#f92672>=</span> x; <span style=color:#66d9ef>throw</span> x;
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>catch</span> (Error x) {
+</span></span><span style=display:flex><span>                    thrown <span style=color:#f92672>=</span> x; <span style=color:#66d9ef>throw</span> x;
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>catch</span> (Throwable x) {
+</span></span><span style=display:flex><span>                    thrown <span style=color:#f92672>=</span> x; <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> Error(x);
+</span></span><span style=display:flex><span>                } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>                    afterExecute(task, thrown);
+</span></span><span style=display:flex><span>                }
+</span></span><span style=display:flex><span>            } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>                task <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>                w.<span style=color:#a6e22e>completedTasks</span><span style=color:#f92672>++</span>;
+</span></span><span style=display:flex><span>                w.<span style=color:#a6e22e>unlock</span>();
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        completedAbruptly <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>        processWorkerExit(w, completedAbruptly);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>我们来模拟一下代码的执行流程，当 task.run 出现异常，那么首先由各个 catch 块进行捕获，将异常赋值给 thrown 变量，最后传递给 afterExecute 钩子方法。</p><p>接着执行第二个 finally 块进行解锁等操作，最后执行最后一个 finally 块中的 processWorkerExit 方法处理 Worker 的退出，我们前面其实提到过，这里 completedAbruptly 为 true（跳过对其赋值为 false）</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>processWorkerExit</span>(Worker w, <span style=color:#66d9ef>boolean</span> completedAbruptly) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (completedAbruptly) <span style=color:#75715e>// If abrupt, then workerCount wasn&#39;t adjusted</span>
+</span></span><span style=display:flex><span>        decrementWorkerCount();
+</span></span><span style=display:flex><span>    <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>int</span> c <span style=color:#f92672>=</span> ctl.<span style=color:#a6e22e>get</span>();
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (runStateLessThan(c, STOP)) {
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>        addWorker(<span style=color:#66d9ef>null</span>, <span style=color:#66d9ef>false</span>);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>可以看到，如果此时线程池还在运行中，那么一定会添加一个新的 Worker 来顶替这个执行异常的线程。</p><p>当所有的 finally 执行完后，<strong>异常就会逐个向外抛</strong>。</p><p>在 Thread 类中，还有这样一个方法 dispatchUncaughtException，不知道你以前注意到没有。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>private</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>dispatchUncaughtException</span>(Throwable e) {
+</span></span><span style=display:flex><span>    getUncaughtExceptionHandler().<span style=color:#a6e22e>uncaughtException</span>(<span style=color:#66d9ef>this</span>, e);
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>它的作用是什么呢？将未捕获的异常分发给 <strong>Handler</strong>，注意，这个方法只能被 JVM 调用。</p><p>而这里的 Handler 其实就是 UncaughtExceptionHandler，也是 Thread 内部的一个函数式接口：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#a6e22e>@FunctionalInterface</span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>interface</span> <span style=color:#a6e22e>UncaughtExceptionHandler</span> {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>uncaughtException</span>(Thread t, Throwable e);
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>根据 java doc 来看，就是当一个线程因为未捕获的异常而即将终止时，JVM 将使用 Thread.getUncaughtExceptionHandler 获取设置的 UncaughtExceptionHandler 实例，并通过调用 uncaughtException 方法传递相关的异常信息，其实说的就是 dispatchUncaughtException 方法的作用。</p><p>一个线程默认的 UncaughtExceptionHandler 是其 ThreadGroup 对象，如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>public</span> UncaughtExceptionHandler <span style=color:#a6e22e>getUncaughtExceptionHandler</span>() {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>return</span> uncaughtExceptionHandler <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>?</span> uncaughtExceptionHandler : group;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这个 ThreadGroup 是 UncaughtExceptionHandler 的子类，所以默认情况下，当线程由于未捕获的异常而即将终止时，就会调用到下面的方法：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>ThreadGroup</span> <span style=color:#66d9ef>implements</span> Thread.<span style=color:#a6e22e>UncaughtExceptionHandler</span> {
+</span></span><span style=display:flex><span>    <span style=color:#a6e22e>@Override</span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>uncaughtException</span>(Thread t, Throwable e) {
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (parent <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) {
+</span></span><span style=display:flex><span>            parent.<span style=color:#a6e22e>uncaughtException</span>(t, e);
+</span></span><span style=display:flex><span>        } <span style=color:#66d9ef>else</span> {
+</span></span><span style=display:flex><span>            Thread.<span style=color:#a6e22e>UncaughtExceptionHandler</span> ueh <span style=color:#f92672>=</span>
+</span></span><span style=display:flex><span>                Thread.<span style=color:#a6e22e>getDefaultUncaughtExceptionHandler</span>();
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (ueh <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) {
+</span></span><span style=display:flex><span>                ueh.<span style=color:#a6e22e>uncaughtException</span>(t, e);
+</span></span><span style=display:flex><span>            } <span style=color:#66d9ef>else</span> <span style=color:#66d9ef>if</span> (<span style=color:#f92672>!</span>(e <span style=color:#66d9ef>instanceof</span> ThreadDeath)) {
+</span></span><span style=display:flex><span>                System.<span style=color:#a6e22e>err</span>.<span style=color:#a6e22e>print</span>(<span style=color:#e6db74>&#34;Exception in thread \&#34;&#34;</span>
+</span></span><span style=display:flex><span>                                 <span style=color:#f92672>+</span> t.<span style=color:#a6e22e>getName</span>() <span style=color:#f92672>+</span> <span style=color:#e6db74>&#34;\&#34; &#34;</span>);
+</span></span><span style=display:flex><span>                e.<span style=color:#a6e22e>printStackTrace</span>(System.<span style=color:#a6e22e>err</span>);
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>如果我们设置了线程的 UncaughtExceptionHandler，如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#f92672>import</span> java.util.concurrent.*;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>ExecutorTest</span> {
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>main</span>(String<span style=color:#f92672>[]</span> args) <span style=color:#66d9ef>throws</span> NoSuchFieldException, IllegalAccessException {
+</span></span><span style=display:flex><span>        ThreadPoolExecutor executor <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> ThreadPoolExecutor(4, 4, 0L, TimeUnit.<span style=color:#a6e22e>MILLISECONDS</span>, <span style=color:#66d9ef>new</span> ArrayBlockingQueue<span style=color:#f92672>&lt;&gt;</span>(10), <span style=color:#66d9ef>new</span> ExceptionThreadFactory());
+</span></span><span style=display:flex><span>        executor.<span style=color:#a6e22e>execute</span>(() <span style=color:#f92672>-&gt;</span> {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> RuntimeException(<span style=color:#e6db74>&#34;error!!&#34;</span>);
+</span></span><span style=display:flex><span>        });
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>ExceptionThreadFactory</span> <span style=color:#66d9ef>implements</span> ThreadFactory {
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>private</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>final</span> AtomicInteger poolNumber <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> AtomicInteger(1);
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>private</span> <span style=color:#66d9ef>final</span> ThreadGroup group;
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>private</span> <span style=color:#66d9ef>final</span> AtomicInteger threadNumber <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> AtomicInteger(1);
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>private</span> <span style=color:#66d9ef>final</span> String namePrefix;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        ExceptionThreadFactory() {
+</span></span><span style=display:flex><span>            SecurityManager s <span style=color:#f92672>=</span> System.<span style=color:#a6e22e>getSecurityManager</span>();
+</span></span><span style=display:flex><span>            group <span style=color:#f92672>=</span> (s <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span>) <span style=color:#f92672>?</span> s.<span style=color:#a6e22e>getThreadGroup</span>() : Thread.<span style=color:#a6e22e>currentThread</span>().<span style=color:#a6e22e>getThreadGroup</span>();
+</span></span><span style=display:flex><span>            namePrefix <span style=color:#f92672>=</span> <span style=color:#e6db74>&#34;pool-&#34;</span> <span style=color:#f92672>+</span> poolNumber.<span style=color:#a6e22e>getAndIncrement</span>() <span style=color:#f92672>+</span> <span style=color:#e6db74>&#34;-thread-&#34;</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>public</span> Thread <span style=color:#a6e22e>newThread</span>(Runnable r) {
+</span></span><span style=display:flex><span>            Thread t <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> Thread(group, r, namePrefix <span style=color:#f92672>+</span> threadNumber.<span style=color:#a6e22e>getAndIncrement</span>(), 0);
+</span></span><span style=display:flex><span>            <span style=color:#75715e>/**
+</span></span></span><span style=display:flex><span><span style=color:#75715e>             * 设置 UncaughtExceptionHandler
+</span></span></span><span style=display:flex><span><span style=color:#75715e>             */</span>
+</span></span><span style=display:flex><span>            t.<span style=color:#a6e22e>setUncaughtExceptionHandler</span>((thread, e) <span style=color:#f92672>-&gt;</span> {
+</span></span><span style=display:flex><span>                System.<span style=color:#a6e22e>out</span>.<span style=color:#a6e22e>println</span>(<span style=color:#e6db74>&#34;出现异常&#34;</span>);
+</span></span><span style=display:flex><span>                e.<span style=color:#a6e22e>printStackTrace</span>(); <span style=color:#75715e>// 打印堆栈</span>
+</span></span><span style=display:flex><span>            });
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (t.<span style=color:#a6e22e>isDaemon</span>())
+</span></span><span style=display:flex><span>                t.<span style=color:#a6e22e>setDaemon</span>(<span style=color:#66d9ef>false</span>);
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (t.<span style=color:#a6e22e>getPriority</span>() <span style=color:#f92672>!=</span> Thread.<span style=color:#a6e22e>NORM_PRIORITY</span>)
+</span></span><span style=display:flex><span>                t.<span style=color:#a6e22e>setPriority</span>(Thread.<span style=color:#a6e22e>NORM_PRIORITY</span>);
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>return</span> t;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>那么当线程由于未捕获的异常而即将终止时，就会执行我们自定义的 UncaughtExceptionHandler#uncaughtException 方法</p><p><img src=assets/2fd5d959d68d89e260610af42ddd7029.png alt class=rounded-shadow-image loading=lazy></p><p>上面这种方式仅仅是基于 execute 来提交任务，但是我们知道线程池还有一种提交任务的方式 — <strong>submit</strong>。</p><p>在 submit 方法中，每一个 Callable 对象都会被封装为一个 RunnableFuture，从名字可以看出来，这个类和 Runnable、Future 都有关系，事实上也是如此，RunnableFuture 继承了 Runnable 和 Future。</p><p>当然，RunnableFuture 只是一个接口，这里使用的具体实现是 FutureTask</p><p><img src=assets/5c57faff81e2f89cae10eedaf84618dc.png alt class=rounded-shadow-image loading=lazy></p><p>所以，真正在线程池执行的是 FutureTask 的 run 方法：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>run</span>() {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (state <span style=color:#f92672>!=</span> NEW <span style=color:#f92672>||</span> <span style=color:#f92672>!</span>UNSAFE.<span style=color:#a6e22e>compareAndSwapObject</span>(<span style=color:#66d9ef>this</span>, runnerOffset, <span style=color:#66d9ef>null</span>, Thread.<span style=color:#a6e22e>currentThread</span>()))
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>return</span>;
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>        Callable<span style=color:#f92672>&lt;</span>V<span style=color:#f92672>&gt;</span> c <span style=color:#f92672>=</span> callable;
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>if</span> (c <span style=color:#f92672>!=</span> <span style=color:#66d9ef>null</span> <span style=color:#f92672>&amp;&amp;</span> state <span style=color:#f92672>==</span> NEW) {
+</span></span><span style=display:flex><span>            V result;
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>boolean</span> ran;
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>try</span> {
+</span></span><span style=display:flex><span>                result <span style=color:#f92672>=</span> c.<span style=color:#a6e22e>call</span>(); <span style=color:#75715e>// 调用 call</span>
+</span></span><span style=display:flex><span>                ran <span style=color:#f92672>=</span> <span style=color:#66d9ef>true</span>;
+</span></span><span style=display:flex><span>            } <span style=color:#66d9ef>catch</span> (Throwable ex) {
+</span></span><span style=display:flex><span>                result <span style=color:#f92672>=</span> <span style=color:#66d9ef>null</span>;
+</span></span><span style=display:flex><span>                ran <span style=color:#f92672>=</span> <span style=color:#66d9ef>false</span>;
+</span></span><span style=display:flex><span>                setException(ex);
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>if</span> (ran) <span style=color:#75715e>// 如果 call 出现异常则 ran 为 false，不会设置 result，否则设置 result</span>
+</span></span><span style=display:flex><span>                set(result);
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    } <span style=color:#66d9ef>finally</span> {
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>protected</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>setException</span>(Throwable t) {
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>if</span> (UNSAFE.<span style=color:#a6e22e>compareAndSwapInt</span>(<span style=color:#66d9ef>this</span>, stateOffset, NEW, COMPLETING)) {
+</span></span><span style=display:flex><span>        outcome <span style=color:#f92672>=</span> t;
+</span></span><span style=display:flex><span>        UNSAFE.<span style=color:#a6e22e>putOrderedInt</span>(<span style=color:#66d9ef>this</span>, stateOffset, EXCEPTIONAL); <span style=color:#75715e>// final state</span>
+</span></span><span style=display:flex><span>        finishCompletion();
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>可以看到，即使执行 call 方法出现异常，也会被捕获，然后将异常暂存到 FutureTask 的 outcome 属性中。</p><p>如果想要拿到 call 方法抛出的异常，怎么做呢？其实很简单，get 一下就行，就像下面这样：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-java data-lang=java><span style=display:flex><span><span style=color:#f92672>import</span> java.util.concurrent.*;
+</span></span><span style=display:flex><span><span style=color:#f92672>import</span> java.util.concurrent.atomic.AtomicInteger;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#66d9ef>public</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>ExecutorTest</span> {
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>public</span> <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>void</span> <span style=color:#a6e22e>main</span>(String<span style=color:#f92672>[]</span> args) <span style=color:#66d9ef>throws</span> NoSuchFieldException, IllegalAccessException,
+</span></span><span style=display:flex><span>            ExecutionException, InterruptedException {
+</span></span><span style=display:flex><span>        ThreadPoolExecutor executor <span style=color:#f92672>=</span> <span style=color:#66d9ef>new</span> ThreadPoolExecutor(4, 4, 0L, TimeUnit.<span style=color:#a6e22e>MILLISECONDS</span>, <span style=color:#66d9ef>new</span> ArrayBlockingQueue<span style=color:#f92672>&lt;&gt;</span>(10), <span style=color:#66d9ef>new</span> ExceptionThreadFactory());
+</span></span><span style=display:flex><span>        Future<span style=color:#f92672>&lt;</span>Object<span style=color:#f92672>&gt;</span> future <span style=color:#f92672>=</span> executor.<span style=color:#a6e22e>submit</span>(() <span style=color:#f92672>-&gt;</span> {
+</span></span><span style=display:flex><span>            <span style=color:#66d9ef>throw</span> <span style=color:#66d9ef>new</span> RuntimeException(<span style=color:#e6db74>&#34;error!!&#34;</span>);
+</span></span><span style=display:flex><span>        });
+</span></span><span style=display:flex><span>        System.<span style=color:#a6e22e>out</span>.<span style=color:#a6e22e>println</span>(<span style=color:#e6db74>&#34;get: &#34;</span>);
+</span></span><span style=display:flex><span>        future.<span style=color:#a6e22e>get</span>(); <span style=color:#75715e>// get 一下</span>
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#66d9ef>static</span> <span style=color:#66d9ef>class</span> <span style=color:#a6e22e>ExceptionThreadFactory</span> <span style=color:#66d9ef>implements</span> ThreadFactory {
+</span></span><span style=display:flex><span>        
+</span></span><span style=display:flex><span>        <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>        
+</span></span><span style=display:flex><span>        <span style=color:#66d9ef>public</span> Thread <span style=color:#a6e22e>newThread</span>(Runnable r) {
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>            t.<span style=color:#a6e22e>setUncaughtExceptionHandler</span>((thread, e) <span style=color:#f92672>-&gt;</span> {
+</span></span><span style=display:flex><span>                System.<span style=color:#a6e22e>out</span>.<span style=color:#a6e22e>println</span>(<span style=color:#e6db74>&#34;出现异常&#34;</span>);
+</span></span><span style=display:flex><span>                e.<span style=color:#a6e22e>printStackTrace</span>();
+</span></span><span style=display:flex><span>            });
+</span></span><span style=display:flex><span>            <span style=color:#75715e>// ...</span>
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>结果如下图：</p><p><img src=assets/47e2870ca22a92cca7f2f28b8f830149.png alt class=rounded-shadow-image loading=lazy></p><p>那执行任务的线程呢？线程执行的是 FutureTask 的 run 方法，而在这个 run 方法里面，即使 call 时出现了异常，也会被捕获，那你说对整体的外部流程有影响吗？很明显没有啊，所以，这个执行任务的线程接着会调用 afterExecute 钩子，然后进入下一轮 while 循环（从队列里面继续拿任务），并不会被替换。</p><p>既然线程都不会退出，那 JVM 理所当然的不会调用 dispatchUncaughtException 方法进行异常分发了。</p><p>注意，上图中的第一段堆栈异常其实是 main 线程的，因为我们并没有对 future.get 做异常捕获，所以 JVM 会对 main 线程调用 dispatchUncaughtException。</p><p>最后，总结：</p><p>当使用 execute 提交任务时，如果任务执行（run 方法）出现异常，那么异常往外抛，异常堆栈被输出，同时执行任务的线程被“销毁”，但是还会创建一个替代的线程加入到线程池，而执行异常的线程由于未被捕获的异常而退出，那么对应的 UncaughtExceptionHandler 的 uncaughtException 方法会被 JVM 调用。</p><p>而当使用 submit 提交任务时，如果任务执行（call 方法）出现异常，那么异常被捕获，设置到 FutureTask 的 outcome 字段上，要想感知到异常，必须调用 get 方法，同时执行任务的线程也不会退出。</p><p>当然，不管是 execute 还是 submit，执行出现异常都不会影响线程池中其他线程执行任务，这是显而易见的，如果一个线程执行异常导致整个线程池崩了，那还得了。</p><p>最后的最后，给一个提交任务的建议，其实就是能用 execute 就不用 submit，非要用 submit 就必须 get 结果，才能避免异常丢失。</p></div><div class="row middle-xs"><div class=col-xs-12></div></div><div class=row><div class=col-xs-12></div></div><div style=height:50px></div><div class=site-footer><div class=footer-content><div class=footer-copyright>Copyright He Jin © 2025</div><div class=footer-separator>|</div><div class=footer-license><a href=https://creativecommons.org/licenses/by-nc-nd/4.0/ target=_blank rel=noopener>CC BY-NC-ND 4.0</a></div></div></div></div></div></article><script>document.addEventListener("DOMContentLoaded",function(){const e=document.getElementById("disqus_thread"),t=new MutationObserver(function(n){n.forEach(function(){const s=e.getElementsByTagName("iframe");if(s.length>1){const n=s[1];for(;e.firstChild;)e.removeChild(e.firstChild);e.appendChild(n),t.disconnect()}})});t.observe(e,{childList:!0,subtree:!0})})</script></body></html>

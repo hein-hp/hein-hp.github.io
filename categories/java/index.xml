@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Java on Hejin's Blog</title><link>https://blog.remind.me/categories/java/</link><description>Recent content in Java on Hejin's Blog</description><generator>Hugo</generator><language>cn</language><lastBuildDate>Tue, 04 Mar 2025 00:00:00 +0000</lastBuildDate><atom:link href="https://blog.remind.me/categories/java/index.xml" rel="self" type="application/rss+xml"/><item><title>浅谈 J.U.C 线程池核心源码</title><link>https://blog.remind.me/posts/%E6%B5%85%E8%B0%88-j.u.c-%E7%BA%BF%E7%A8%8B%E6%B1%A0%E6%A0%B8%E5%BF%83%E6%BA%90%E7%A0%81/</link><pubDate>Tue, 04 Mar 2025 00:00:00 +0000</pubDate><guid>https://blog.remind.me/posts/%E6%B5%85%E8%B0%88-j.u.c-%E7%BA%BF%E7%A8%8B%E6%B1%A0%E6%A0%B8%E5%BF%83%E6%BA%90%E7%A0%81/</guid><description>&lt;p>简单分析一下线程池的运行机制、Worker、线程池中的锁、异常处理等源码。&lt;/p>
+&lt;h2 id="线程池运行机制">线程池运行机制&lt;/h2>
+&lt;p>这里简单提一下线程池的运行机制，相信大家对这个并不陌生。&lt;/p>
+&lt;p>&lt;img src="assets/b437fcb41ec5f855446edb960a91045d.png" 
+ alt="" 
+ class="rounded-shadow-image"
+ loading="lazy"> &lt;/p>
+&lt;p>当一个 Task 被提交，首先检查当前线程池中的工作线程数量，如果尚未超过 corePoolSize，那么可以创建一个新的 Worker，将这个 Task 作为它的 firstTask 执行。&lt;/p>
+&lt;p>如果此时工作线程的数量来到了 corePoolSize，那么线程池尝试将这个 Task 加入到队列中，后续由线程池中的某个线程从队列中拿到这个 Task 执行。&lt;/p>
+&lt;p>如果创建线程池时设置的队列是一个有界队列，那么当任务数量超出队列容量时，再次尝试创建一个新的 Worker。&lt;/p>
+&lt;p>如果当前线程池中的工作线程数量来到了 maximumPoolSize，显然创建新 Worker 失败，线程池执行预设的拒绝策略，否则该 Task 作为新 Worker 的 firstTask 执行。&lt;/p>
+&lt;p>与这个机制相关的代码如下：&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;">&lt;code class="language-java" data-lang="java">&lt;span style="display:flex;">&lt;span>&lt;span style="color:#66d9ef">public&lt;/span> &lt;span style="color:#66d9ef">void&lt;/span> &lt;span style="color:#a6e22e">execute&lt;/span>(Runnable command) {
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">if&lt;/span> (command &lt;span style="color:#f92672">==&lt;/span> &lt;span style="color:#66d9ef">null&lt;/span>)
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">throw&lt;/span> &lt;span style="color:#66d9ef">new&lt;/span> NullPointerException();
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">int&lt;/span> c &lt;span style="color:#f92672">=&lt;/span> ctl.&lt;span style="color:#a6e22e">get&lt;/span>();
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#75715e">// Worker 数量 &amp;lt; corePoolSize，增加 Worker 来执行 command&lt;/span>
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">if&lt;/span> (workerCountOf(c) &lt;span style="color:#f92672">&amp;lt;&lt;/span> corePoolSize) {
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">if&lt;/span> (addWorker(command, &lt;span style="color:#66d9ef">true&lt;/span>))
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">return&lt;/span>;
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> c &lt;span style="color:#f92672">=&lt;/span> ctl.&lt;span style="color:#a6e22e">get&lt;/span>();
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> }
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#75715e">// Worker 数量超过 corePoolSize，那么就先入队&lt;/span>
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">if&lt;/span> (isRunning(c) &lt;span style="color:#f92672">&amp;amp;&amp;amp;&lt;/span> workQueue.&lt;span style="color:#a6e22e">offer&lt;/span>(command)) {
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">int&lt;/span> recheck &lt;span style="color:#f92672">=&lt;/span> ctl.&lt;span style="color:#a6e22e">get&lt;/span>();
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">if&lt;/span> (&lt;span style="color:#f92672">!&lt;/span>isRunning(recheck) &lt;span style="color:#f92672">&amp;amp;&amp;amp;&lt;/span> remove(command))
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> reject(command);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">else&lt;/span> &lt;span style="color:#66d9ef">if&lt;/span> (workerCountOf(recheck) &lt;span style="color:#f92672">==&lt;/span> 0)
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> addWorker(&lt;span style="color:#66d9ef">null&lt;/span>, &lt;span style="color:#66d9ef">false&lt;/span>);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> }
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#75715e">// 队列满，就增加 Worker 来执行 command&lt;/span>
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">else&lt;/span> &lt;span style="color:#66d9ef">if&lt;/span> (&lt;span style="color:#f92672">!&lt;/span>addWorker(command, &lt;span style="color:#66d9ef">false&lt;/span>))
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#75715e">// 增加 Worker 失败，就要调用拒绝策略了&lt;/span>
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> reject(command);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span>}
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>当然，这只是一个粗略的线程池运行机制，更多细节的内容，接着往下看。&lt;/p></description></item></channel></rss>
