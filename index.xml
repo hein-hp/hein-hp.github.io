@@ -1,4 +1,38 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Hejin's Blog</title><link>https://blog.remind.me/</link><description>Recent content on Hejin's Blog</description><generator>Hugo</generator><language>cn</language><lastBuildDate>Sun, 13 Jul 2025 00:00:00 +0000</lastBuildDate><atom:link href="https://blog.remind.me/index.xml" rel="self" type="application/rss+xml"/><item><title>【深度】详解银企直连</title><link>https://blog.remind.me/posts/%E6%B7%B1%E5%BA%A6%E8%AF%A6%E8%A7%A3%E9%93%B6%E4%BC%81%E7%9B%B4%E8%BF%9E/</link><pubDate>Sun, 13 Jul 2025 00:00:00 +0000</pubDate><guid>https://blog.remind.me/posts/%E6%B7%B1%E5%BA%A6%E8%AF%A6%E8%A7%A3%E9%93%B6%E4%BC%81%E7%9B%B4%E8%BF%9E/</guid><description>&lt;blockquote>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Hejin's Blog</title><link>https://blog.remind.me/</link><description>Recent content on Hejin's Blog</description><generator>Hugo</generator><language>cn</language><lastBuildDate>Mon, 21 Jul 2025 00:00:00 +0000</lastBuildDate><atom:link href="https://blog.remind.me/index.xml" rel="self" type="application/rss+xml"/><item><title>Seata 网络通信源码解析</title><link>https://blog.remind.me/posts/seata-%E7%BD%91%E7%BB%9C%E9%80%9A%E4%BF%A1%E6%BA%90%E7%A0%81%E8%A7%A3%E6%9E%90/</link><pubDate>Mon, 21 Jul 2025 00:00:00 +0000</pubDate><guid>https://blog.remind.me/posts/seata-%E7%BD%91%E7%BB%9C%E9%80%9A%E4%BF%A1%E6%BA%90%E7%A0%81%E8%A7%A3%E6%9E%90/</guid><description>&lt;blockquote>
+&lt;p>源码版本：2.5.0&lt;/p>&lt;/blockquote>
+&lt;p>在 Seata 中有三类角色，TC、RM、TM，Seata Server 作为 TC 协调分支事务的提交和回滚，各个资源作为 RM 和 TM，那么这三者之间是如何通信的呢？相信读完这篇文章之后，你就会知道答案。&lt;/p>
+&lt;h2 id="整体类层次结构">整体类层次结构&lt;/h2>
+&lt;p>我们先着眼大局，看一看 Seata 整个网络通信的类层次结构。&lt;/p>
+&lt;p>&lt;img src="assets/35bb8d1f4b218a42dd9a3a1a559735c7.png" 
+ alt="" 
+ class="rounded-shadow-image"
+ loading="lazy"> &lt;/p>
+&lt;p>从类结构层次分析可以看出，Seata 的网络通信底层基于 Netty 实现。AbstractNettyRemoting 作为整个通信层的核心抽象基类，封装了通用的 RPC 基础能力，例如同步调用 (sendSync) 和异步调用 (sendAsync) 等方法。&lt;/p>
+&lt;p>本质上，网络通信的核心操作可归结为同步和异步两种调用模式，而请求与响应的区别主要在于报文内容的语义。&lt;/p>
+&lt;p>虽然 AbstractNettyRemoting 提供了这些基础方法，但不同角色（Server、TM、RM）在调用行为上是存在差异的，比如 Server 的请求调用需要明确指定目标客户端进行消息发送，而 Client（TM/RM）发送请求时通常无需指定特定的服务端实例。它们只需将请求发出，具体的服务端节点选择由实现类中的负载均衡机制完成。&lt;/p>
+&lt;p>为了体现这种角色差异，Seata 设计了 RemotingServer 和 RemotingClient 两个接口。它们都依赖于 AbstractNettyRemoting 提供的底层网络通信能力，并由各自的具体子类继承 AbstractNettyRemoting 来实现相应的接口功能。&lt;/p>
+&lt;h2 id="如何启动-server-和-client">如何启动 Server 和 Client&lt;/h2>
+&lt;p>下面分别以 Server 和 Client 的视角来看它们是如何启动的，以及在启动的时候需要做些什么事情。&lt;/p>
+&lt;h3 id="server-是怎么启动的">Server 是怎么启动的&lt;/h3>
+&lt;p>Seata Server 端作为一个独立的 SpringBoot 项目，要怎么样才能在 SpringBoot 启动的时候自动做点事呢？&lt;/p>
+&lt;p>Seata 的做法是实现了 CommandLineRunner 接口，我们主要关注它的 run 方法：&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;">&lt;code class="language-java" data-lang="java">&lt;span style="display:flex;">&lt;span>&lt;span style="color:#75715e">// org.apache.seata.server.ServerRunner#run&lt;/span>
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span>&lt;span style="color:#66d9ef">public&lt;/span> &lt;span style="color:#66d9ef">void&lt;/span> &lt;span style="color:#a6e22e">run&lt;/span>(String... args) {
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">try&lt;/span> {
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">long&lt;/span> start &lt;span style="color:#f92672">=&lt;/span> System.&lt;span style="color:#a6e22e">currentTimeMillis&lt;/span>();
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> seataServer.&lt;span style="color:#a6e22e">start&lt;/span>(args);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> started &lt;span style="color:#f92672">=&lt;/span> &lt;span style="color:#66d9ef">true&lt;/span>;
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span>
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> &lt;span style="color:#66d9ef">long&lt;/span> cost &lt;span style="color:#f92672">=&lt;/span> System.&lt;span style="color:#a6e22e">currentTimeMillis&lt;/span>() &lt;span style="color:#f92672">-&lt;/span> start;
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> LOGGER.&lt;span style="color:#a6e22e">info&lt;/span>(&lt;span style="color:#e6db74">&amp;#34;\r\n you can visit seata console UI on namingserver. \r\n log path: {}.&amp;#34;&lt;/span>, &lt;span style="color:#66d9ef">this&lt;/span>.&lt;span style="color:#a6e22e">logPath&lt;/span>);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> LOGGER.&lt;span style="color:#a6e22e">info&lt;/span>(&lt;span style="color:#e6db74">&amp;#34;seata server started in {} millSeconds&amp;#34;&lt;/span>, cost);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> } &lt;span style="color:#66d9ef">catch&lt;/span> (Throwable e) {
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> started &lt;span style="color:#f92672">=&lt;/span> Boolean.&lt;span style="color:#a6e22e">FALSE&lt;/span>;
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> LOGGER.&lt;span style="color:#a6e22e">error&lt;/span>(&lt;span style="color:#e6db74">&amp;#34;seata server start error: {} &amp;#34;&lt;/span>, e.&lt;span style="color:#a6e22e">getMessage&lt;/span>(), e);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> System.&lt;span style="color:#a6e22e">exit&lt;/span>(&lt;span style="color:#f92672">-&lt;/span>1);
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span> }
+&lt;/span>&lt;/span>&lt;span style="display:flex;">&lt;span>}
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>这其中核心的逻辑就在 seataServer.start() 方法中：&lt;/p></description></item><item><title>【深度】详解银企直连</title><link>https://blog.remind.me/posts/%E6%B7%B1%E5%BA%A6%E8%AF%A6%E8%A7%A3%E9%93%B6%E4%BC%81%E7%9B%B4%E8%BF%9E/</link><pubDate>Sun, 13 Jul 2025 00:00:00 +0000</pubDate><guid>https://blog.remind.me/posts/%E6%B7%B1%E5%BA%A6%E8%AF%A6%E8%A7%A3%E9%93%B6%E4%BC%81%E7%9B%B4%E8%BF%9E/</guid><description>&lt;blockquote>
 &lt;p>📌 本文为转载文章。🔗 原文链接：&lt;a href="https://zhuanlan.zhihu.com/p/773592381">【深度】详解银企直连&lt;/a>&lt;/p>
 &lt;p>本博客仅作学习与分享之用，版权归原作者所有。如有侵权请联系删除。&lt;/p>&lt;/blockquote>
 &lt;h2 id="一名词解释">一、名词解释&lt;/h2>
